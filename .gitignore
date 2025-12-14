@@ -1,0 +1,21 @@
+# python
+__pycache__/
+*.pyc
+
+# venvs
+.venv/
+env/
+
+# ide
+.vscode/
+.idea/
+
+# os cruft
+.DS_Store
+
+# synthdesk runtime
+runs/
+*.log
+
+# archives are committed, but no date folders
+
