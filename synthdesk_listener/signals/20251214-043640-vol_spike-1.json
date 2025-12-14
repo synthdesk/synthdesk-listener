@@ -1,0 +1,14 @@
+{
+  "event": "vol_spike",
+  "pair": "ETHUSDT",
+  "price": null,
+  "timestamp": "2025-12-14T04:36:40.290655+00:00",
+  "metrics": {
+    "short_vol": 0.00010835256113678731,
+    "long_vol": 0.00010765789047562679,
+    "ratio": 1.006452575450731,
+    "rolling_mean": 3119.819,
+    "rolling_std": 0.6498075334346786,
+    "history_length": 60
+  }
+}

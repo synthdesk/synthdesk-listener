@@ -1,0 +1,16 @@
+{
+  "event": "vol_spike",
+  "pair": "BTCUSDT",
+  "price": null,
+  "timestamp": "2025-12-14T06:55:41.063565+00:00",
+  "metrics": {
+    "short_vol": 9.609322583911248e-05,
+    "long_vol": 6.464304051358047e-05,
+    "ratio": 1.4865208238298264,
+    "rolling_mean": 90149.67916666668,
+    "rolling_std": 12.018562379364775,
+    "history_length": 60
+  },
+  "version": "0.2.0",
+  "tick_id": 115
+}

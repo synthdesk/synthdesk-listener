@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "started_at": "2025-12-14T06:44:25.227334+00:00",
+  "pairs": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "poll_interval": 10,
+  "log_level": "DEBUG"
+}

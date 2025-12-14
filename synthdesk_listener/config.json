@@ -1,0 +1,9 @@
+{
+  "poll_interval_seconds": 10,
+  "pairs": ["BTCUSDT", "ETHUSDT"],
+  "vol_window": 60,
+  "breakout_threshold": 0.015,
+  "mr_band_width": 0.01,
+  "log_level": "DEBUG",
+  "log_file": null
+}
