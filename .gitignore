@@ -13,9 +13,12 @@ env/
 # os cruft
 .DS_Store
 
-# synthdesk runtime
+# synthdesk runtime output (non-authoritative)
+# - `runs/` is runtime data produced by executing the listener.
+# - `runs/` must not be committed; idempotency/auditability live in code and specs, not git history.
+# - git is not a data store.
 runs/
-*.log
-
-# archives are committed, but no date folders
-
+**/*.jsonl
+**/*.csv
+**/*.parquet
+**/*.log
