@@ -98,3 +98,8 @@ This helps reduce partial-write/corruption likelihood for:
 - sequence metadata
 - per-pair rolling window state
 - append-only CSV/text logs
+
+## NO_SILENT_STRUCTURE
+
+- No new directories, modules, or invariants may be introduced without a same-day ledger entry.
+- Unrecorded structures are provisional and deletable.
