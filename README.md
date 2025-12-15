@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 ---
 ## synthdesk-listener
 

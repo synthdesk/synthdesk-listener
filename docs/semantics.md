@@ -1,3 +1,6 @@
+STATUS: LAW (normative, constraining)
+VIOLATION CONSEQUENCE: Non-compliant changes must be reverted or blocked until compliant.
+
 ---
 ## semantics and scope
 

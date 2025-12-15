@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # Architecture overview
 
 This page is kept for compatibility with earlier scaffolding.

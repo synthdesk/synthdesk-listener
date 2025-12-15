@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # Bootstrap log — 2025-12-14
 
 This file records the engineering steps taken during the 2025-12-14 build session that bootstrapped the “scientific listener” architecture.

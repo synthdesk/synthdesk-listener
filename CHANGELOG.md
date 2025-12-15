@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 ## v0.2 — initialization of structured versioning
 - added versioned signal directories under runs/
 - added version field to all event JSONs

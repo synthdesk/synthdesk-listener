@@ -1,3 +1,6 @@
+STATUS: LAW (normative, constraining)
+VIOLATION CONSEQUENCE: Non-compliant changes must be reverted or blocked until compliant.
+
 # State persistence
 
 The listener persists per-pair rolling windows so it can restart without losing statistical context.

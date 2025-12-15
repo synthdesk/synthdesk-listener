@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # synthdesk-listener architecture
 
 status: authoritative for v0.4 (signal-only)

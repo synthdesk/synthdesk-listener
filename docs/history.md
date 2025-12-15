@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # History (engineering epochs)
 
 This file tracks the long arc of synthdesk development — conceptual epochs, engineering phases, and major architectural upgrades.

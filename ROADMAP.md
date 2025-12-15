@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # synthdesk-listener roadmap
 
 This roadmap is intentionally narrow: it tracks correctness, auditability, and research ergonomics for the listener.

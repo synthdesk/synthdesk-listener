@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # Sequencing and integrity
 
 Sequencing is treated as a first-class correctness constraint: events and logs should be orderable and auditable even across restarts.

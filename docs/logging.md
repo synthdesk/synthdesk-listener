@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # Logging surfaces
 
 The listener writes multiple orthogonal log “surfaces” under `runs/<VERSION>/<YYYY-MM-DD>/` to support auditing and offline analysis.

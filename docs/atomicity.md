@@ -1,3 +1,6 @@
+STATUS: LAW (normative, constraining)
+VIOLATION CONSEQUENCE: Non-compliant changes must be reverted or blocked until compliant.
+
 # Atomicity and crash-safety
 
 The listener treats disk persistence as part of correctness: partially written state can corrupt research datasets and invalidate audit trails.

@@ -1,3 +1,5 @@
+STATUS: REFERENCE (descriptive, non-authoritative)
+
 # Listener specification
 
 This page specifies the listener’s runtime and data contracts as implemented in `synthdesk_listener/`.
