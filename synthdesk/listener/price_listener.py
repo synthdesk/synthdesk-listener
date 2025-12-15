@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import csv
 import json
-import logging
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,14 +10,17 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from ..utils.atomic import atomic_write_json, safe_append_csv, safe_append_text
-from ..version import VERSION
-from .detectors import detect_breakout, detect_mr_touch, detect_vol_spike
-from .transforms import rolling_mean, rolling_std, rolling_volatility
+from synthdesk.listener.detectors.breakout import detect_breakout
+from synthdesk.listener.detectors.mr_touch import detect_mr_touch
+from synthdesk.listener.detectors.vol_spike import detect_vol_spike
+from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
+from synthdesk.listener.transforms import rolling_mean, rolling_std, rolling_volatility
+from synthdesk.listener.version import VERSION
 
 API_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
 
 SignalCallback = Callable[[dict], None]
+
 
 def _get_day_dir() -> Path:
     base = Path(__file__).resolve().parents[2] / "runs" / VERSION
@@ -258,18 +259,11 @@ class PriceListener:
             if event is not None:
                 # attach shared metrics
                 event.setdefault("metrics", {}).update(metrics)
+                emitted.append(event)
                 if self.callback:
                     self.callback(event)
-                if self.logger:
-                    self.logger.info("Event %s detected for %s", event["event"], pair)
-                emitted.append(event)
         return emitted
 
 
-__all__ = [
-    "fetch_price",
-    "fetch_prices",
-    "PriceTracker",
-    "PriceListener",
-    "SignalCallback",
-]
+__all__ = ["PriceListener", "fetch_prices"]
+

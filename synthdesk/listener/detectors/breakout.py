@@ -1,17 +1,50 @@
-"""
-breakout detector (stub interface).
+"""Price regime detectors."""
 
-real implementation will plug into price_listener metrics:
-- rolling_mean
-- rolling_std
-- breakout thresholds
+from __future__ import annotations
 
-todo:
-- unify signature with vol_spike + mr_touch detectors
-- move hardcoded thresholds into config
-"""
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+Event = Dict[str, Any]
 
 
-def detect_breakout(pair, price, rolling_mean, threshold, ts):
-    return None
+def _timestamp(ts: Optional[str]) -> str:
+    return ts or datetime.now(timezone.utc).isoformat()
+
+
+def detect_breakout(
+    pair: str,
+    price: float,
+    rolling_mean: float,
+    breakout_threshold: float,
+    timestamp: Optional[str] = None,
+) -> Optional[Event]:
+    """Detect when price deviates from rolling mean beyond the threshold (relative).
+
+    breakout_threshold is interpreted as a fractional distance from the mean.
+    """
+    ts = _timestamp(timestamp)
+    if rolling_mean == 0:
+        return None
+    deviation = price - rolling_mean
+    deviation_pct = deviation / rolling_mean
+    if abs(deviation_pct) <= breakout_threshold:
+        return None
+
+    return {
+        "event": "breakout",
+        "pair": pair,
+        "price": price,
+        "timestamp": ts,
+        "metrics": {
+            "rolling_mean": rolling_mean,
+            "deviation": deviation,
+            "deviation_pct": deviation_pct,
+            "breakout_threshold": breakout_threshold,
+        },
+        "version": None,
+    }
+
+
+__all__ = ["detect_breakout", "Event"]
 

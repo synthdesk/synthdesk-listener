@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence, Tuple
+from typing import Sequence, Tuple
 
 
 def rolling_mean(values: Sequence[float], window: int) -> float:
@@ -73,3 +73,4 @@ __all__ = [
     "percentage_change",
     "percent_change",
 ]
+

@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from .callbacks.on_regime_shift import handle_regime_shift
-from .listeners.price_listener import PriceListener, fetch_prices
-from .utils.atomic import atomic_write_json, safe_append_text, safe_append_csv
-from .utils.logging_utils import configure_logging
-from .version import VERSION
+from synthdesk.callbacks.on_regime_shift import handle_regime_shift
+from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
+from synthdesk.listener.price_listener import PriceListener, fetch_prices
+from synthdesk.listener.version import VERSION
+from synthdesk.utils.logging_utils import configure_logging
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "poll_interval_seconds": 10,

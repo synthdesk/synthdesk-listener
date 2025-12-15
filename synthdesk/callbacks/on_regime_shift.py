@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from synthdesk_listener.version import VERSION
-from synthdesk_listener.utils.atomic import safe_append_csv
+from synthdesk.listener.io.atomic import safe_append_csv
+from synthdesk.listener.version import VERSION
+
 
 def handle_regime_shift(event: Dict[str, Any], signals_dir: Path, logger=None) -> Path:
     """Print and persist an event to a versioned run directory.
@@ -66,3 +66,4 @@ def handle_regime_shift(event: Dict[str, Any], signals_dir: Path, logger=None) -
 
 
 __all__ = ["handle_regime_shift"]
+
