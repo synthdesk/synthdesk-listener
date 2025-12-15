@@ -1,3 +1,8 @@
+# synthdesk runtime output (non-authoritative)
+# runs/ is runtime-generated data
+# git is not a data store
+# runs/ must never be committed
+
 # python
 __pycache__/
 *.pyc
@@ -5,6 +10,7 @@ __pycache__/
 # venvs
 .venv/
 env/
+.env
 
 # ide
 .vscode/
@@ -13,10 +19,6 @@ env/
 # os cruft
 .DS_Store
 
-# synthdesk runtime output (non-authoritative)
-# - `runs/` is runtime data produced by executing the listener.
-# - `runs/` must not be committed; idempotency/auditability live in code and specs, not git history.
-# - git is not a data store.
 runs/
 **/*.jsonl
 **/*.csv
