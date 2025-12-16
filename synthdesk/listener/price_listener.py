@@ -152,6 +152,7 @@ class PriceListener:
         self.seq_log_path = self.day_dir / "sequence_integrity.log"
         self.tick_log_path = self.day_dir / "tick_log.csv"
         self.detector_trace_path = self.day_dir / "detector_trace.csv"
+        self.tick_obs_path = self.day_dir / "tick_observation.jsonl"
         self.trackers = {}
         for pair in self.pairs:
             tracker = PriceTracker(pair, vol_window)
@@ -173,10 +174,21 @@ class PriceListener:
         self.tick_seq += 1
         tick_id = self.tick_seq
 
+        tick_record = {
+            "ts_utc": timestamp,
+            "asset": pair,
+            "price": price,
+            "source": "binance",
+        }
+
+        with open(self.tick_obs_path, "a") as f:
+            f.write(json.dumps(tick_record) + "\n")
+
         meta = {
             "last_tick_id": self.tick_seq,
             "updated_at": timestamp,
-        }
+    }
+
         try:
             atomic_write_json(self.seq_meta_path, meta)
         except Exception:
