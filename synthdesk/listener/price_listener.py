@@ -22,13 +22,6 @@ API_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
 SignalCallback = Callable[[dict], None]
 
 
-def _get_day_dir() -> Path:
-    base = Path(__file__).resolve().parents[2] / "runs" / VERSION
-    day_dir = base / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    day_dir.mkdir(parents=True, exist_ok=True)
-    return day_dir
-
-
 def fetch_price(pair: str, logger=None) -> Optional[float]:
     """Fetch latest price for a trading pair from Binance public API."""
     url = API_URL.format(symbol=pair)
@@ -134,6 +127,7 @@ class PriceListener:
 
         base = Path(__file__).resolve().parents[2] / "runs" / VERSION
         base.mkdir(parents=True, exist_ok=True)
+        self.runs_base_dir = base
         self.seq_meta_path = base / "sequence_meta.json"
 
         self.tick_seq = 0
@@ -145,21 +139,20 @@ class PriceListener:
             except Exception:
                 self.tick_seq = 0
 
-        day_dir = base / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        day_dir.mkdir(parents=True, exist_ok=True)
-        self.day_dir = day_dir
         self.last_ts_per_pair: Dict[str, str] = {}
-        self.seq_log_path = self.day_dir / "sequence_integrity.log"
-        self.tick_log_path = self.day_dir / "tick_log.csv"
-        self.detector_trace_path = self.day_dir / "detector_trace.csv"
-        self.tick_obs_path = self.day_dir / "tick_observation.jsonl"
         self.trackers = {}
+        day_dir = self._current_day_dir()
         for pair in self.pairs:
             tracker = PriceTracker(pair, vol_window)
-            state_path = self.day_dir / f"state_{pair}.json"
+            state_path = day_dir / f"state_{pair}.json"
             if state_path.exists():
                 tracker.load_state(state_path)
             self.trackers[pair] = tracker
+
+    def _current_day_dir(self) -> Path:
+        day_dir = self.runs_base_dir / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        day_dir.mkdir(parents=True, exist_ok=True)
+        return day_dir
 
     def process_tick(
         self, pair: str, price: Optional[float], timestamp: Optional[str] = None
@@ -173,6 +166,7 @@ class PriceListener:
 
         self.tick_seq += 1
         tick_id = self.tick_seq
+        day_dir = self._current_day_dir()
 
         tick_record = {
             "ts_utc": timestamp,
@@ -181,7 +175,8 @@ class PriceListener:
             "source": "binance",
         }
 
-        with open(self.tick_obs_path, "a") as f:
+        tick_obs_path = day_dir / "tick_observation.jsonl"
+        with open(tick_obs_path, "a") as f:
             f.write(json.dumps(tick_record) + "\n")
 
         meta = {
@@ -198,7 +193,8 @@ class PriceListener:
         last_ts = self.last_ts_per_pair.get(pair)
         if last_ts is not None and timestamp <= last_ts:
             msg = f"{timestamp}, pair={pair}, tick_id={tick_id}, non_monotonic_ts, prev={last_ts}"
-            safe_append_text(self.seq_log_path, msg)
+            seq_log_path = day_dir / "sequence_integrity.log"
+            safe_append_text(seq_log_path, msg)
             if self.logger:
                 self.logger.warning(msg)
             return []
@@ -211,7 +207,7 @@ class PriceListener:
         if not metrics:
             return []
 
-        state_path = self.day_dir / f"state_{pair}.json"
+        state_path = day_dir / f"state_{pair}.json"
         tracker.save_state(state_path)
 
         events = [
@@ -248,7 +244,8 @@ class PriceListener:
             1 if events[1] is not None else 0,
             1 if events[2] is not None else 0,
         ]
-        safe_append_csv(self.tick_log_path, row, header=header)
+        tick_log_path = day_dir / "tick_log.csv"
+        safe_append_csv(tick_log_path, row, header=header)
 
         # write detector trace
         header = [
@@ -265,7 +262,8 @@ class PriceListener:
             1 if events[1] is not None else 0,
             1 if events[2] is not None else 0,
         ]
-        safe_append_csv(self.detector_trace_path, row, header=header)
+        detector_trace_path = day_dir / "detector_trace.csv"
+        safe_append_csv(detector_trace_path, row, header=header)
         emitted: List[Dict[str, Any]] = []
         for event in events:
             if event is not None:
@@ -278,4 +276,3 @@ class PriceListener:
 
 
 __all__ = ["PriceListener", "fetch_prices"]
-
