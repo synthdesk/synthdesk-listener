@@ -1,0 +1,23 @@
+name: listener-ci
+
+on: [push, pull_request]
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: schema check
+        run: |
+          python tests/inspection/assert_schema.py \
+            tests/fixtures/tick_observation.sample.jsonl
+
+      - name: monotonic timestamp check
+        run: |
+          python tests/inspection/assert_monotonic_ts.py \
+            tests/fixtures/tick_observation.sample.jsonl
+

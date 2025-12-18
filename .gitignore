@@ -24,3 +24,6 @@ runs/
 **/*.csv
 **/*.parquet
 **/*.log
+
+# allow committed fixtures (small, non-runtime)
+!tests/fixtures/**/*.jsonl
