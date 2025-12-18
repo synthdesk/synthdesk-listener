@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import signal
-import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -60,11 +59,8 @@ def _sleep_until(target: datetime, shutdown_event: threading.Event) -> bool:
     return not shutdown_event.wait(timeout=remaining)
 
 
-def _build_run_command(args: DaemonArgs) -> list[str]:
+def _build_run_argv(args: DaemonArgs) -> list[str]:
     return [
-        "python3",
-        "-m",
-        "synthdesk_listener.run",
         "--symbols",
         args.symbols,
         "--resolution",
@@ -96,15 +92,17 @@ def cli(argv: Iterable[str] | None = None) -> int:
         _error_stderr(f"shutdown reason={shutdown_reason['reason']}")
         return 0
 
-    cmd = _build_run_command(args)
+    from synthdesk_listener import run as run_module
+
+    run_argv = _build_run_argv(args)
     while not shutdown_event.is_set():
         try:
-            completed = subprocess.run(cmd, check=False)
-        except OSError as exc:
-            _error_stderr(f"tick_failed error=spawn_failure detail={str(exc).replace(' ', '_')}")
+            exit_code = int(run_module.cli(run_argv))
+        except Exception as exc:
+            _error_stderr(f"tick_failed error=exception detail={str(exc).replace(' ', '_')}")
         else:
-            if completed.returncode != 0:
-                _error_stderr(f"tick_failed exit={completed.returncode}")
+            if exit_code != 0:
+                _error_stderr(f"tick_failed exit={exit_code}")
 
         scheduled = next_tick + timedelta(seconds=args.tick_seconds)
         now = datetime.now(timezone.utc)

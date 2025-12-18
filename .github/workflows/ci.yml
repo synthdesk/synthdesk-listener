@@ -21,3 +21,6 @@ jobs:
           python tests/inspection/assert_monotonic_ts.py \
             tests/fixtures/tick_observation.sample.jsonl
 
+      - name: forbidden capability guard
+        run: |
+          python ci/forbidden_capabilities.py
