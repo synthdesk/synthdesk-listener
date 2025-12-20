@@ -40,7 +40,7 @@ Rules:
 **Role:** Pure listener logic (stateless primitives)
 
 Contains:
-- detectors
+- transforms for belief-free metrics
 - IO primitives
 - state loaders / savers
 - reusable logic
@@ -68,6 +68,11 @@ Rules:
   - snapshots
   - JSON / files
 - has no execution or operational authority
+
+Detectors:
+- MUST NOT execute in `synthdesk_listener/`
+- MUST run in `synthdesk_agency/`, consuming listener-emitted raw data + belief-free scalar metrics only
+- MUST NOT be removed or deprecated during relocation; detector logic is unchanged for now
 
 ---
 

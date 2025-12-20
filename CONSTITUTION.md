@@ -9,6 +9,8 @@ This file is the authoritative entrypoint for synthdesk-listener invariants. It 
 - Outputs MUST NOT encode recommendations, priorities, timing, magnitude, or intent.
 - Outputs MUST NOT introduce advisory/execution semantics (forbidden vocabulary is defined in the semantics LAW).
 - Downstream systems MUST introduce their own independent decision logic; listener artifacts confer no operational authority.
+- The listener MUST emit only raw observations plus belief-free scalar metrics: `log_return`, `rolling_mean`, `rolling_std` (volatility), `zscore`, `slope`, `range`, `rolling_correlation`.
+- Detectors MUST NOT execute in the listener; detector execution MUST be relocated to `synthdesk_agency/` consuming listener outputs (detector logic unchanged for now, and existing detectors must not be removed or deprecated).
 - Persistence MUST be treated as correctness: core JSON state/metadata MUST be written transactionally (tmp + fsync + replace).
 - Append-only log surfaces MUST flush and fsync on each write.
 - Per-pair rolling state MUST persist under `runs/<VERSION>/<YYYY-MM-DD>/state_<PAIR>.json` and MUST be reloaded when present.

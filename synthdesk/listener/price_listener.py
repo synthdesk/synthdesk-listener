@@ -1,4 +1,4 @@
-"""Price listener utilities for fetching data and running detectors."""
+"""Price listener utilities for fetching data and emitting belief-free metrics."""
 
 from __future__ import annotations
 
@@ -6,20 +6,15 @@ import json
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from synthdesk.listener.detectors.breakout import detect_breakout
-from synthdesk.listener.detectors.mr_touch import detect_mr_touch
-from synthdesk.listener.detectors.vol_spike import detect_vol_spike
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
-from synthdesk.listener.transforms import rolling_mean, rolling_std, rolling_volatility
+from synthdesk.listener.transforms import log_return, log_returns, price_range, rolling_corr, rolling_mean, rolling_std, slope, zscore
 from synthdesk.listener.version import VERSION
 
 API_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-
-SignalCallback = Callable[[dict], None]
 
 
 def fetch_price(pair: str, logger=None) -> Optional[float]:
@@ -81,48 +76,53 @@ class PriceTracker:
         if not history:
             return {}
 
-        eff_window = min(self.long_window, len(history))
-        mean = rolling_mean(history, eff_window)
-        std = rolling_std(history, eff_window)
-
         if len(history) < 2:
             return {
-                "rolling_mean": mean,
-                "rolling_std": std,
-                "long_vol": 0.0,
-                "short_vol": 0.0,
-                "history_length": len(history),
+                "log_return": 0.0,
+                "rolling_mean": 0.0,
+                "rolling_std": 0.0,
+                "zscore": 0.0,
+                "slope": 0.0,
+                "range": 0.0,
             }
 
-        short_vol = rolling_volatility(history, min(len(history), self.short_window))
-        long_vol = rolling_volatility(history, min(len(history), self.long_window))
+        try:
+            last_lr = log_return(history[-2], history[-1])
+        except ValueError:
+            last_lr = 0.0
+
+        returns_window = min(self.long_window - 1, len(history) - 1)
+        returns = log_returns(history, returns_window)
+
+        mean = rolling_mean(returns, len(returns)) if returns else 0.0
+        std = rolling_std(returns, len(returns)) if returns else 0.0
+        z = zscore(last_lr, mean, std)
+
+        n_slope = min(self.long_window - 1, len(history) - 1)
+        current_slope = slope(history, n_slope) if n_slope > 0 else 0.0
+        current_range = price_range(history, min(self.long_window, len(history)))
 
         return {
+            "log_return": last_lr,
             "rolling_mean": mean,
             "rolling_std": std,
-            "long_vol": long_vol,
-            "short_vol": short_vol,
-            "history_length": len(history),
+            "zscore": z,
+            "slope": current_slope,
+            "range": current_range,
         }
 
 
 class PriceListener:
-    """Feed live prices into detectors and trigger callbacks on events."""
+    """Ingest prices and emit belief-free scalar metrics (no detectors)."""
 
     def __init__(
         self,
         pairs: Iterable[str],
         vol_window: int,
-        breakout_threshold: float,
-        band_width: float,
-        callback: Optional[SignalCallback] = None,
         logger=None,
     ) -> None:
         self.pairs = list(pairs)
         self.vol_window = vol_window
-        self.breakout_threshold = breakout_threshold
-        self.band_width = band_width
-        self.callback = callback
         self.logger = logger
 
         base = Path(__file__).resolve().parents[2] / "runs" / VERSION
@@ -156,9 +156,9 @@ class PriceListener:
 
     def process_tick(
         self, pair: str, price: Optional[float], timestamp: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, float]:
         """
-        Process a new price tick for a given pair and emit any detected events.
+        Process a new price tick and emit belief-free scalar metrics.
         """
         if timestamp is None:
             # fall back to UTC "now" if main ever passes None
@@ -182,7 +182,7 @@ class PriceListener:
         meta = {
             "last_tick_id": self.tick_seq,
             "updated_at": timestamp,
-    }
+        }
 
         try:
             atomic_write_json(self.seq_meta_path, meta)
@@ -197,82 +197,66 @@ class PriceListener:
             safe_append_text(seq_log_path, msg)
             if self.logger:
                 self.logger.warning(msg)
-            return []
+            return {}
         self.last_ts_per_pair[pair] = timestamp
 
         tracker = self.trackers.get(pair)
         if tracker is None or price is None:
-            return []
+            return {}
         metrics = tracker.update(price)
         if not metrics:
-            return []
+            return {}
 
         state_path = day_dir / f"state_{pair}.json"
         tracker.save_state(state_path)
 
-        events = [
-            detect_breakout(pair, price, metrics["rolling_mean"], self.breakout_threshold, timestamp),
-            detect_vol_spike(pair, metrics["short_vol"], metrics["long_vol"], timestamp),
-            detect_mr_touch(pair, price, metrics["rolling_mean"], self.band_width, timestamp),
-        ]
-        for ev in events:
-            if ev is not None:
-                ev["tick_id"] = tick_id
+        anchor = self.pairs[0] if self.pairs else None
+        if anchor and anchor in self.trackers:
+            a_prices = list(self.trackers[anchor].prices)
+            b_prices = list(tracker.prices)
+            window_prices = min(self.vol_window, len(a_prices), len(b_prices))
+            if window_prices >= 2:
+                a_returns = log_returns(a_prices[-window_prices:], window_prices - 1)
+                b_returns = log_returns(b_prices[-window_prices:], window_prices - 1)
+                window_rets = min(len(a_returns), len(b_returns))
+                metrics["rolling_correlation"] = (
+                    rolling_corr(a_returns[-window_rets:], b_returns[-window_rets:], window_rets)
+                    if window_rets >= 2
+                    else 0.0
+                )
+            else:
+                metrics["rolling_correlation"] = 0.0
+        else:
+            metrics["rolling_correlation"] = 0.0
 
         # write combined tick log row
         header = [
             "timestamp",
             "pair",
             "price",
+            "log_return",
             "rolling_mean",
             "rolling_std",
-            "short_vol",
-            "long_vol",
-            "breakout_fired",
-            "vol_spike_fired",
-            "mr_touch_fired",
+            "zscore",
+            "slope",
+            "range",
+            "rolling_correlation",
         ]
         row = [
             timestamp,
             pair,
             price,
+            metrics.get("log_return"),
             metrics.get("rolling_mean"),
             metrics.get("rolling_std"),
-            metrics.get("short_vol"),
-            metrics.get("long_vol"),
-            1 if events[0] is not None else 0,
-            1 if events[1] is not None else 0,
-            1 if events[2] is not None else 0,
+            metrics.get("zscore"),
+            metrics.get("slope"),
+            metrics.get("range"),
+            metrics.get("rolling_correlation"),
         ]
         tick_log_path = day_dir / "tick_log.csv"
         safe_append_csv(tick_log_path, row, header=header)
-
-        # write detector trace
-        header = [
-            "timestamp",
-            "pair",
-            "breakout_fired",
-            "vol_spike_fired",
-            "mr_touch_fired",
-        ]
-        row = [
-            timestamp,
-            pair,
-            1 if events[0] is not None else 0,
-            1 if events[1] is not None else 0,
-            1 if events[2] is not None else 0,
-        ]
-        detector_trace_path = day_dir / "detector_trace.csv"
-        safe_append_csv(detector_trace_path, row, header=header)
-        emitted: List[Dict[str, Any]] = []
-        for event in events:
-            if event is not None:
-                # attach shared metrics
-                event.setdefault("metrics", {}).update(metrics)
-                emitted.append(event)
-                if self.callback:
-                    self.callback(event)
-        return emitted
+        return metrics
 
 
 __all__ = ["PriceListener", "fetch_prices"]
