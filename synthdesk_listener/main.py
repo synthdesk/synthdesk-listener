@@ -61,6 +61,34 @@ def _emit_listener_event(event_spine_path: Path, event_type: str, payload: Dict[
         return
 
 
+def _parse_iso8601(timestamp: str) -> Optional[datetime]:
+    try:
+        candidate = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+
+
+def _emit_invariant_violation_payload(
+    event_spine_path: Path,
+    invariant_id: str,
+    severity: str,
+    details: Dict[str, Any],
+    timestamp: Optional[str] = None,
+) -> None:
+    _emit_listener_event(
+        event_spine_path,
+        "invariant.violation",
+        {
+            "event_type": "invariant.violation",
+            "invariant_id": invariant_id,
+            "severity": severity,
+            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+            "details": details,
+        },
+    )
+
+
 def _emit_invariant_violation(
     event_spine_path: Path,
     invariant: str,
@@ -69,12 +97,11 @@ def _emit_invariant_violation(
     expected: str,
     action: str,
 ) -> None:
-    _emit_listener_event(
+    _emit_invariant_violation_payload(
         event_spine_path,
-        "invariant.violation",
+        invariant,
+        severity,
         {
-            "invariant": invariant,
-            "severity": severity,
             "observed": observed,
             "expected": expected,
             "action": action,
@@ -90,6 +117,9 @@ def run(config_path: Optional[str] = None) -> None:
         config = load_config(resolved_path)
 
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
+
+        listener_started_at = datetime.now(timezone.utc)
+        heartbeat_gap_violation_emitted = False
 
         run_meta = {
             "version": VERSION,
@@ -126,10 +156,11 @@ def run(config_path: Optional[str] = None) -> None:
 
         logger.info("Starting listener for pairs %s with poll interval %ss", config["pairs"], poll_interval)
         while True:
-            hb_ts = datetime.now(timezone.utc).isoformat()
+            now_dt = datetime.now(timezone.utc)
+            hb_ts = now_dt.isoformat()
             safe_append_text(heartbeat_path, f"{hb_ts} alive")
             prices = fetch_prices(config["pairs"], logger=logger)
-            now_ts = datetime.now(timezone.utc).isoformat()
+            now_ts = now_dt.isoformat()
             if len(prices) != len(config["pairs"]):
                 missing_pairs = [pair for pair in config["pairs"] if pair not in prices]
                 if missing_pairs:
@@ -157,6 +188,23 @@ def run(config_path: Optional[str] = None) -> None:
                         "timestamp must be greater than previous per-pair timestamp",
                         "ignored",
                     )
+            if not heartbeat_gap_violation_emitted:
+                for pair in config["pairs"]:
+                    last_ts = listener.last_ts_per_pair.get(pair)
+                    last_dt = _parse_iso8601(last_ts) if last_ts else None
+                    if last_dt is None:
+                        last_dt = listener_started_at
+                    gap_seconds = (now_dt - last_dt).total_seconds()
+                    if gap_seconds > 30:
+                        _emit_invariant_violation_payload(
+                            event_spine_path,
+                            "inv-heartbeat-gap-30s",
+                            "critical",
+                            {"reason": "heartbeat gap exceeded 30s"},
+                            timestamp=now_ts,
+                        )
+                        heartbeat_gap_violation_emitted = True
+                        break
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         _emit_listener_event(event_spine_path, "listener.stop", {"reason": "keyboard_interrupt"})
