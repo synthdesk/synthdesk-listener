@@ -52,3 +52,48 @@ listener running locally; ai budget fuse active; ledger manual-only
 - Tokens: (unknown)
 - Errors: RuntimeError: Missing OPENAI_API_KEY
 
+## 2025-12-20 — synthdesk
+
+### 1. objective going into today
+complete phase 3 shadow validation and freeze worldview
+
+### 2. actual actions taken
+- implemented canonical event spine
+- ran new listener in parallel with legacy systemd listener
+- validated lifecycle emission
+- observed invariant silence under live volatility
+
+### 3. decisions made
+- accepted: phase 3 worldview (signals ≠ truth)
+- rejected: replacing legacy listener
+- deferred: router consumption, execution cutover
+
+### 4. current system state (authoritative)
+- listener: dual-run (legacy + spine-emitting)
+- router: docs-only, no runtime
+- agency: unchanged
+- broadcast: event spine live
+
+### 5. open loops / known problems
+- [ ] router not yet consuming spine
+- [ ] no execution ledger
+
+### 6. next concrete starting step
+draft phase-4 cutover checklist (no execution)
+
+
+# Ledger: 2025-12-21
+
+## Summary
+Added a watchdog to emit descriptive downtime events when the listener is silent.
+
+## Events
+- Defined a listener downtime event emitted by a watchdog process.
+
+## Artifacts
+- Files/paths touched:
+  - synthdesk_listener/watchdog.py
+
+## Metrics
+- Tokens: Not specified
+- Errors: Not specified
