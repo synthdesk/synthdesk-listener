@@ -1,0 +1,3 @@
+Phase Boundary (Listener -> Router)
+
+Phase 1 establishes epistemic ground truth only. The listener emits immutable, append-only, schema-validated facts (market.regime, market.regime_change, invariant.violation) with no interpretation, intent, posture, or strategy. Facts may be constant, repetitive, or empty depending on upstream semantics; this does not invalidate Phase 1. Correctness in Phase 1 is defined strictly by immutability, replayability, validation, and failure visibility—not by signal richness or variability. All meaning, posture, prioritization, and decision-making are explicitly forbidden in the listener and begin only in Phase 2, inside the router.
