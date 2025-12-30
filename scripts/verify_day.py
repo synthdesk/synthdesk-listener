@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
             print("PASS")
             return 0
         if diff_result.returncode == 1:
-            print("FAIL")
-            return 1
+            print("ERROR: listener behavior diverged from frozen regime epoch")
+            sys.exit(1)
         return _error("error=diff_failed")
     finally:
         if temp_path is not None:
