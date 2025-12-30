@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import socket
 import time
 import uuid
@@ -190,7 +191,34 @@ def run(config_path: Optional[str] = None) -> None:
                     header = ["timestamp", "pair", "price"]
                     row = [now_ts, pair, price]
                     safe_append_csv(prices_path, row, header=header)
-                listener.process_tick(pair, price, timestamp=now_ts)
+                metrics = listener.process_tick(pair, price, timestamp=now_ts)
+                if isinstance(metrics, dict) and metrics:
+                    invalid_metrics: Dict[str, Any] = {}
+                    required_fields = (
+                        "log_return",
+                        "rolling_mean",
+                        "rolling_std",
+                        "zscore",
+                        "slope",
+                        "range",
+                        "rolling_correlation",
+                    )
+                    for field in required_fields:
+                        value = metrics.get(field)
+                        if value is None:
+                            invalid_metrics[field] = value
+                        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                            if not math.isfinite(value):
+                                invalid_metrics[field] = value
+                    if invalid_metrics:
+                        _emit_invariant_violation(
+                            event_spine_path,
+                            "listener.metrics_invalid",
+                            "warning",
+                            invalid_metrics,
+                            "all required metrics finite and non-null",
+                            "ignored",
+                        )
                 if prev_ts is not None and now_ts <= prev_ts:
                     _emit_invariant_violation(
                         event_spine_path,
