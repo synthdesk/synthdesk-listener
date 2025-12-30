@@ -142,17 +142,18 @@ class ReplayHarness:
 
                 symbol = self._extract_symbol(obj)
                 timestamp = self._extract_timestamp(obj)
+                raw_timestamp = timestamp
                 price = self._extract_price(obj)
-                ts_dt = self._parse_timestamp(timestamp)
+                ts_dt = self._parse_timestamp(raw_timestamp)
 
-                if symbol is None or timestamp is None or ts_dt is None or price is None:
+                if symbol is None or raw_timestamp is None or ts_dt is None or price is None:
                     skipped_lines.append(line_no)
                     continue
                 if symbol not in listener.trackers:
                     skipped_lines.append(line_no)
                     continue
 
-                metrics = listener.process_tick(symbol, price, timestamp=timestamp)
+                metrics = listener.process_tick(symbol, price, timestamp=raw_timestamp)
                 regime_metrics = self._build_regime_metrics(metrics, price)
                 regime, confidence = classify_regime(symbol, regime_metrics, ts_dt.timestamp())
 
@@ -161,9 +162,9 @@ class ReplayHarness:
                     "regime": regime,
                     "confidence": confidence,
                     "window": self.window_label,
-                    "tick_ts": timestamp,
+                    "tick_ts": raw_timestamp,
                 }
-                self._emit_event("market.regime", timestamp, regime_payload)
+                self._emit_event("market.regime", raw_timestamp, regime_payload)
 
                 prev_regime = prev_regime_by_symbol.get(symbol)
                 if prev_regime is None:
@@ -176,12 +177,12 @@ class ReplayHarness:
                         "confidence": confidence,
                         "window": self.window_label,
                     }
-                    self._emit_event("market.regime_change", timestamp, change_payload)
+                    self._emit_event("market.regime_change", raw_timestamp, change_payload)
                     prev_regime_by_symbol[symbol] = regime
 
                 if first_timestamp is None:
-                    first_timestamp = timestamp
-                last_timestamp = timestamp
+                    first_timestamp = raw_timestamp
+                last_timestamp = raw_timestamp
                 processed += 1
 
         return ReplaySummary(
