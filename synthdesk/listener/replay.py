@@ -161,6 +161,7 @@ class ReplayHarness:
                     "regime": regime,
                     "confidence": confidence,
                     "window": self.window_label,
+                    "tick_ts": timestamp,
                 }
                 self._emit_event("market.regime", timestamp, regime_payload)
 

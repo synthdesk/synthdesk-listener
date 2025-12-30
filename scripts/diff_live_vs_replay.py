@@ -212,46 +212,57 @@ def _compare_strict(
     compare_event_id: bool,
 ) -> list[Dict[str, Any]]:
     mismatches: list[Dict[str, Any]] = []
-    max_len = max(len(live_events), len(replay_events))
-    for idx in range(max_len):
-        live_event = live_events[idx] if idx < len(live_events) else None
-        replay_event = replay_events[idx] if idx < len(replay_events) else None
+    live_indexed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    replay_indexed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    live_missing_tick_ts: list[Dict[str, Any]] = []
+    replay_missing_tick_ts: list[Dict[str, Any]] = []
+
+    for event in live_events:
+        tick_ts = event["payload"].get("tick_ts")
+        if isinstance(tick_ts, str) and tick_ts:
+            live_indexed[(event["symbol"], tick_ts)] = event
+        else:
+            live_missing_tick_ts.append(event)
+    for event in replay_events:
+        tick_ts = event["payload"].get("tick_ts")
+        if isinstance(tick_ts, str) and tick_ts:
+            replay_indexed[(event["symbol"], tick_ts)] = event
+        else:
+            replay_missing_tick_ts.append(event)
+
+    for event in live_missing_tick_ts:
+        mismatches.append({"reason": "missing_tick_ts", "live": event, "replay": None})
+    for event in replay_missing_tick_ts:
+        mismatches.append({"reason": "missing_tick_ts", "live": None, "replay": event})
+
+    all_keys = sorted(set(live_indexed.keys()) | set(replay_indexed.keys()))
+    for key in all_keys:
+        live_event = live_indexed.get(key)
+        replay_event = replay_indexed.get(key)
         if live_event is None or replay_event is None:
             mismatches.append(
+                {"key": key, "reason": "missing", "live": live_event, "replay": replay_event}
+            )
+            continue
+        live_payload = live_event["payload"]
+        replay_payload = replay_event["payload"]
+        if live_payload.get("regime") != replay_payload.get("regime"):
+            mismatches.append(
                 {
-                    "index": idx,
-                    "reason": "missing",
-                    "live": live_event,
-                    "replay": replay_event,
+                    "key": key,
+                    "reason": "regime",
+                    "live": live_payload.get("regime"),
+                    "replay": replay_payload.get("regime"),
                 }
             )
             continue
-        reasons = []
-        if live_event["timestamp"] != replay_event["timestamp"]:
-            reasons.append("timestamp")
-        if live_event["symbol"] != replay_event["symbol"]:
-            reasons.append("symbol")
-        live_payload = _normalize_payload(live_event["payload"])
-        replay_payload = _normalize_payload(replay_event["payload"])
-        if live_payload != replay_payload:
-            reasons.append("payload")
-        metrics_diff = _diff_metrics(
-            _extract_metrics(live_event["payload"]),
-            _extract_metrics(replay_event["payload"]),
-        )
-        if metrics_diff:
-            reasons.append(f"metrics:{','.join(metrics_diff)}")
         if compare_event_id and live_event.get("event_id") != replay_event.get("event_id"):
-            reasons.append("event_id")
-        if reasons:
             mismatches.append(
                 {
-                    "index": idx,
-                    "reason": ",".join(reasons),
-                    "live": live_event,
-                    "replay": replay_event,
-                    "live_payload": live_payload,
-                    "replay_payload": replay_payload,
+                    "key": key,
+                    "reason": "event_id",
+                    "live": live_event.get("event_id"),
+                    "replay": replay_event.get("event_id"),
                 }
             )
     return mismatches
@@ -263,7 +274,15 @@ def _print_mismatches(mismatches: list[Dict[str, Any]], *, mode: str) -> None:
     print("first 20 mismatches:")
     for mismatch in mismatches[:20]:
         if mode == "strict":
-            print(f"- index {mismatch.get('index')} reason={mismatch.get('reason')}")
+            if "key" in mismatch:
+                key = mismatch.get("key")
+                if isinstance(key, tuple):
+                    symbol, tick_ts = key
+                    print(f"- {symbol} {tick_ts} reason={mismatch.get('reason')}")
+                else:
+                    print(f"- key={key} reason={mismatch.get('reason')}")
+            else:
+                print(f"- reason={mismatch.get('reason')}")
             live_event = mismatch.get("live")
             replay_event = mismatch.get("replay")
             if isinstance(live_event, dict):
@@ -278,9 +297,6 @@ def _print_mismatches(mismatches: list[Dict[str, Any]], *, mode: str) -> None:
                 )
             else:
                 print("  replay: <missing>")
-            if "payload" in str(mismatch.get("reason")):
-                print(f"  live payload: {mismatch.get('live_payload')}")
-                print(f"  replay payload: {mismatch.get('replay_payload')}")
         else:
             key = mismatch.get("key")
             if isinstance(key, tuple):

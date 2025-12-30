@@ -247,6 +247,7 @@ def run(config_path: Optional[str] = None) -> None:
                     "regime": regime,
                     "confidence": confidence,
                     "window": window_label,
+                    "tick_ts": now_ts,
                 }
                 try:
                     append_event_spine(
