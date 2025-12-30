@@ -222,10 +222,10 @@ def run(config_path: Optional[str] = None) -> None:
                 if prev_ts is not None and now_ts <= prev_ts:
                     _emit_invariant_violation(
                         event_spine_path,
-                        "listener.non_monotonic_timestamp",
+                        "listener.timestamp_non_monotonic",
                         "warning",
-                        {"pair": pair, "timestamp": now_ts, "previous": prev_ts},
-                        "timestamp must be greater than previous per-pair timestamp",
+                        {"prev_ts": prev_ts, "now_ts": now_ts},
+                        "timestamps strictly increasing",
                         "ignored",
                     )
             if not heartbeat_gap_violation_emitted:
