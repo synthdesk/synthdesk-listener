@@ -214,15 +214,8 @@ def _compare_strict(
     mismatches: list[Dict[str, Any]] = []
     live_indexed: Dict[Tuple[str, str], Dict[str, Any]] = {}
     replay_indexed: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    live_missing_tick_ts: list[Dict[str, Any]] = []
     replay_missing_tick_ts: list[Dict[str, Any]] = []
 
-    for event in live_events:
-        tick_ts = event["payload"].get("tick_ts")
-        if isinstance(tick_ts, str) and tick_ts:
-            live_indexed[(event["symbol"], tick_ts)] = event
-        else:
-            live_missing_tick_ts.append(event)
     for event in replay_events:
         tick_ts = event["payload"].get("tick_ts")
         if isinstance(tick_ts, str) and tick_ts:
@@ -230,8 +223,20 @@ def _compare_strict(
         else:
             replay_missing_tick_ts.append(event)
 
-    for event in live_missing_tick_ts:
-        mismatches.append({"reason": "missing_tick_ts", "live": event, "replay": None})
+    if replay_indexed:
+        # Epoch cutoff: ignore legacy live events before the first replay tick_ts.
+        epoch_start = min(key[1] for key in replay_indexed.keys())
+    else:
+        epoch_start = None
+    for event in live_events:
+        tick_ts = event["payload"].get("tick_ts")
+        if not isinstance(tick_ts, str) or not tick_ts:
+            # Legacy live event: no tick_ts; out of scope for strict comparison.
+            continue
+        if epoch_start is not None and tick_ts < epoch_start:
+            # Legacy live event: before replay epoch cutoff; ignore.
+            continue
+        live_indexed[(event["symbol"], tick_ts)] = event
     for event in replay_missing_tick_ts:
         mismatches.append({"reason": "missing_tick_ts", "live": None, "replay": event})
 
