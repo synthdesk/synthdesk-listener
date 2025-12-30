@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from synthdesk.constants import REGIME_EPOCH_START
 from synthdesk.event_envelope import EventEnvelope
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.listener.price_listener import PriceListener
@@ -154,31 +155,32 @@ class ReplayHarness:
                     continue
 
                 metrics = listener.process_tick(symbol, price, timestamp=raw_timestamp)
-                regime_metrics = self._build_regime_metrics(metrics, price)
-                regime, confidence = classify_regime(symbol, regime_metrics, ts_dt.timestamp())
+                if raw_timestamp >= REGIME_EPOCH_START:
+                    regime_metrics = self._build_regime_metrics(metrics, price)
+                    regime, confidence = classify_regime(symbol, regime_metrics, ts_dt.timestamp())
 
-                regime_payload = {
-                    "symbol": symbol,
-                    "regime": regime,
-                    "confidence": confidence,
-                    "window": self.window_label,
-                    "tick_ts": raw_timestamp,
-                }
-                self._emit_event("market.regime", raw_timestamp, regime_payload)
-
-                prev_regime = prev_regime_by_symbol.get(symbol)
-                if prev_regime is None:
-                    prev_regime_by_symbol[symbol] = regime
-                elif prev_regime != regime:
-                    change_payload = {
+                    regime_payload = {
                         "symbol": symbol,
-                        "from": prev_regime,
-                        "to": regime,
+                        "regime": regime,
                         "confidence": confidence,
                         "window": self.window_label,
+                        "tick_ts": raw_timestamp,
                     }
-                    self._emit_event("market.regime_change", raw_timestamp, change_payload)
-                    prev_regime_by_symbol[symbol] = regime
+                    self._emit_event("market.regime", raw_timestamp, regime_payload)
+
+                    prev_regime = prev_regime_by_symbol.get(symbol)
+                    if prev_regime is None:
+                        prev_regime_by_symbol[symbol] = regime
+                    elif prev_regime != regime:
+                        change_payload = {
+                            "symbol": symbol,
+                            "from": prev_regime,
+                            "to": regime,
+                            "confidence": confidence,
+                            "window": self.window_label,
+                        }
+                        self._emit_event("market.regime_change", raw_timestamp, change_payload)
+                        prev_regime_by_symbol[symbol] = regime
 
                 if first_timestamp is None:
                     first_timestamp = raw_timestamp

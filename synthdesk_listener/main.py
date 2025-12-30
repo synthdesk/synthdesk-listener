@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from synthdesk.event_envelope import EventEnvelope
 from synthdesk.event_spine_writer import append_event_spine
+from synthdesk.constants import REGIME_EPOCH_START
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
 from synthdesk.listener.price_listener import PriceListener, fetch_prices
 from synthdesk.listener.replay import classify_regime
@@ -222,74 +223,75 @@ def run(config_path: Optional[str] = None) -> None:
                             "all required metrics finite and non-null",
                             "ignored",
                         )
-                regime_metrics: Dict[str, float] = {}
-                if isinstance(metrics, dict):
-                    returns_mean = metrics.get("rolling_mean")
-                    returns_std = metrics.get("rolling_std")
-                    if (
-                        isinstance(returns_mean, (int, float))
-                        and not isinstance(returns_mean, bool)
-                        and isinstance(returns_std, (int, float))
-                        and not isinstance(returns_std, bool)
-                    ):
-                        regime_metrics = {
-                            "returns_mean": float(returns_mean),
-                            "returns_std": float(returns_std),
-                        }
-                        if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
-                            range_value = metrics.get("range")
-                            if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
-                                regime_metrics["range_pct"] = float(range_value) / float(price)
-                tick_dt = _parse_iso8601(now_ts) or now_dt
-                regime, confidence = classify_regime(pair, regime_metrics, tick_dt.timestamp())
-                regime_payload = {
-                    "symbol": pair,
-                    "regime": regime,
-                    "confidence": confidence,
-                    "window": window_label,
-                    "tick_ts": now_ts,
-                }
-                try:
-                    append_event_spine(
-                        event_spine_path,
-                        EventEnvelope(
-                            event_id=str(uuid.uuid4()),
-                            event_type="market.regime",
-                            timestamp=now_ts,
-                            source="synthdesk_listener",
-                            version=VERSION,
-                            host=socket.gethostname(),
-                            payload=regime_payload,
-                        ),
-                    )
-                except OSError:
-                    pass
-                prev_regime = prev_regime_by_symbol.get(pair)
-                if prev_regime is None:
-                    prev_regime_by_symbol[pair] = regime
-                elif prev_regime != regime:
+                if now_ts >= REGIME_EPOCH_START:
+                    regime_metrics: Dict[str, float] = {}
+                    if isinstance(metrics, dict):
+                        returns_mean = metrics.get("rolling_mean")
+                        returns_std = metrics.get("rolling_std")
+                        if (
+                            isinstance(returns_mean, (int, float))
+                            and not isinstance(returns_mean, bool)
+                            and isinstance(returns_std, (int, float))
+                            and not isinstance(returns_std, bool)
+                        ):
+                            regime_metrics = {
+                                "returns_mean": float(returns_mean),
+                                "returns_std": float(returns_std),
+                            }
+                            if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
+                                range_value = metrics.get("range")
+                                if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
+                                    regime_metrics["range_pct"] = float(range_value) / float(price)
+                    tick_dt = _parse_iso8601(now_ts) or now_dt
+                    regime, confidence = classify_regime(pair, regime_metrics, tick_dt.timestamp())
+                    regime_payload = {
+                        "symbol": pair,
+                        "regime": regime,
+                        "confidence": confidence,
+                        "window": window_label,
+                        "tick_ts": now_ts,
+                    }
                     try:
                         append_event_spine(
                             event_spine_path,
                             EventEnvelope(
                                 event_id=str(uuid.uuid4()),
-                                event_type="market.regime_change",
+                                event_type="market.regime",
                                 timestamp=now_ts,
                                 source="synthdesk_listener",
                                 version=VERSION,
                                 host=socket.gethostname(),
-                                payload={
-                                    "symbol": pair,
-                                    "from": prev_regime,
-                                    "to": regime,
-                                    "confidence": confidence,
-                                    "window": window_label,
-                                },
+                                payload=regime_payload,
                             ),
                         )
                     except OSError:
                         pass
-                    prev_regime_by_symbol[pair] = regime
+                    prev_regime = prev_regime_by_symbol.get(pair)
+                    if prev_regime is None:
+                        prev_regime_by_symbol[pair] = regime
+                    elif prev_regime != regime:
+                        try:
+                            append_event_spine(
+                                event_spine_path,
+                                EventEnvelope(
+                                    event_id=str(uuid.uuid4()),
+                                    event_type="market.regime_change",
+                                    timestamp=now_ts,
+                                    source="synthdesk_listener",
+                                    version=VERSION,
+                                    host=socket.gethostname(),
+                                    payload={
+                                        "symbol": pair,
+                                        "from": prev_regime,
+                                        "to": regime,
+                                        "confidence": confidence,
+                                        "window": window_label,
+                                    },
+                                ),
+                            )
+                        except OSError:
+                            pass
+                        prev_regime_by_symbol[pair] = regime
                 if prev_ts is not None and now_ts <= prev_ts:
                     _emit_invariant_violation(
                         event_spine_path,
