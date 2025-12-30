@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compare live vs replay market.regime events.
 
-Usage: diff_live_vs_replay.py <live_jsonl> <replay_jsonl>
+Usage: diff_live_vs_replay.py [--mode MODE] [--compare-event-id] <live_jsonl> <replay_jsonl>
+Modes: regime | payload | metrics | strict
 """
 
 from __future__ import annotations
@@ -11,9 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
+ALLOWED_MODES = {"regime", "payload", "metrics", "strict"}
 
-def _load_regimes(path: Path) -> tuple[Dict[Tuple[str, str], Dict[str, Any]], list[int]]:
-    regimes: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+def _load_events(path: Path) -> tuple[list[Dict[str, Any]], list[int]]:
+    events: list[Dict[str, Any]] = []
     skipped_lines: list[int] = []
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
@@ -39,42 +42,329 @@ def _load_regimes(path: Path) -> tuple[Dict[Tuple[str, str], Dict[str, Any]], li
             if not isinstance(timestamp, str) or not isinstance(symbol, str):
                 skipped_lines.append(line_no)
                 continue
-            regimes[(timestamp, symbol)] = {
-                "regime": payload.get("regime"),
-                "confidence": payload.get("confidence"),
-                "window": payload.get("window"),
-            }
-    return regimes, skipped_lines
+            events.append(
+                {
+                    "timestamp": timestamp,
+                    "symbol": symbol,
+                    "payload": payload,
+                    "event_id": obj.get("event_id"),
+                    "line_no": line_no,
+                }
+            )
+    return events, skipped_lines
+
+
+def _normalize_payload(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _extract_metrics(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict):
+        return metrics
+    return None
+
+
+def _diff_metrics(live: Dict[str, Any] | None, replay: Dict[str, Any] | None) -> list[str]:
+    if live is None and replay is None:
+        return []
+    if live is None or replay is None:
+        return ["metrics_missing"]
+    fields = sorted(set(live.keys()) | set(replay.keys()))
+    diffs = []
+    for field in fields:
+        if live.get(field) != replay.get(field):
+            diffs.append(field)
+    return diffs
+
+
+def _index_by_key(events: list[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    indexed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for event in events:
+        indexed[(event["timestamp"], event["symbol"])] = event
+    return indexed
+
+
+def _compare_regime(
+    live: Dict[Tuple[str, str], Dict[str, Any]],
+    replay: Dict[Tuple[str, str], Dict[str, Any]],
+    *,
+    compare_event_id: bool,
+) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
+    all_keys = sorted(set(live.keys()) | set(replay.keys()))
+    for key in all_keys:
+        live_event = live.get(key)
+        replay_event = replay.get(key)
+        if live_event is None or replay_event is None:
+            mismatches.append(
+                {"key": key, "reason": "missing", "live": live_event, "replay": replay_event}
+            )
+            continue
+        live_payload = live_event["payload"]
+        replay_payload = replay_event["payload"]
+        live_view = {
+            "regime": live_payload.get("regime"),
+            "confidence": live_payload.get("confidence"),
+            "window": live_payload.get("window"),
+        }
+        replay_view = {
+            "regime": replay_payload.get("regime"),
+            "confidence": replay_payload.get("confidence"),
+            "window": replay_payload.get("window"),
+        }
+        if compare_event_id:
+            live_view["event_id"] = live_event.get("event_id")
+            replay_view["event_id"] = replay_event.get("event_id")
+        if live_view != replay_view:
+            mismatches.append(
+                {"key": key, "reason": "regime", "live": live_view, "replay": replay_view}
+            )
+    return mismatches
+
+
+def _compare_payload(
+    live: Dict[Tuple[str, str], Dict[str, Any]],
+    replay: Dict[Tuple[str, str], Dict[str, Any]],
+    *,
+    compare_event_id: bool,
+) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
+    all_keys = sorted(set(live.keys()) | set(replay.keys()))
+    for key in all_keys:
+        live_event = live.get(key)
+        replay_event = replay.get(key)
+        if live_event is None or replay_event is None:
+            mismatches.append(
+                {"key": key, "reason": "missing", "live": live_event, "replay": replay_event}
+            )
+            continue
+        live_payload = _normalize_payload(live_event["payload"])
+        replay_payload = _normalize_payload(replay_event["payload"])
+        if live_payload != replay_payload:
+            mismatches.append(
+                {
+                    "key": key,
+                    "reason": "payload",
+                    "live": live_payload,
+                    "replay": replay_payload,
+                }
+            )
+            continue
+        if compare_event_id and live_event.get("event_id") != replay_event.get("event_id"):
+            mismatches.append(
+                {
+                    "key": key,
+                    "reason": "event_id",
+                    "live": live_event.get("event_id"),
+                    "replay": replay_event.get("event_id"),
+                }
+            )
+    return mismatches
+
+
+def _compare_metrics(
+    live: Dict[Tuple[str, str], Dict[str, Any]],
+    replay: Dict[Tuple[str, str], Dict[str, Any]],
+    *,
+    compare_event_id: bool,
+) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
+    all_keys = sorted(set(live.keys()) | set(replay.keys()))
+    for key in all_keys:
+        live_event = live.get(key)
+        replay_event = replay.get(key)
+        if live_event is None or replay_event is None:
+            mismatches.append(
+                {"key": key, "reason": "missing", "live": live_event, "replay": replay_event}
+            )
+            continue
+        live_metrics = _extract_metrics(live_event["payload"])
+        replay_metrics = _extract_metrics(replay_event["payload"])
+        diff_fields = _diff_metrics(live_metrics, replay_metrics)
+        if diff_fields:
+            mismatches.append(
+                {
+                    "key": key,
+                    "reason": "metrics",
+                    "fields": diff_fields,
+                    "live": live_metrics,
+                    "replay": replay_metrics,
+                }
+            )
+            continue
+        if compare_event_id and live_event.get("event_id") != replay_event.get("event_id"):
+            mismatches.append(
+                {
+                    "key": key,
+                    "reason": "event_id",
+                    "live": live_event.get("event_id"),
+                    "replay": replay_event.get("event_id"),
+                }
+            )
+    return mismatches
+
+
+def _compare_strict(
+    live_events: list[Dict[str, Any]],
+    replay_events: list[Dict[str, Any]],
+    *,
+    compare_event_id: bool,
+) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
+    max_len = max(len(live_events), len(replay_events))
+    for idx in range(max_len):
+        live_event = live_events[idx] if idx < len(live_events) else None
+        replay_event = replay_events[idx] if idx < len(replay_events) else None
+        if live_event is None or replay_event is None:
+            mismatches.append(
+                {
+                    "index": idx,
+                    "reason": "missing",
+                    "live": live_event,
+                    "replay": replay_event,
+                }
+            )
+            continue
+        reasons = []
+        if live_event["timestamp"] != replay_event["timestamp"]:
+            reasons.append("timestamp")
+        if live_event["symbol"] != replay_event["symbol"]:
+            reasons.append("symbol")
+        live_payload = _normalize_payload(live_event["payload"])
+        replay_payload = _normalize_payload(replay_event["payload"])
+        if live_payload != replay_payload:
+            reasons.append("payload")
+        metrics_diff = _diff_metrics(
+            _extract_metrics(live_event["payload"]),
+            _extract_metrics(replay_event["payload"]),
+        )
+        if metrics_diff:
+            reasons.append(f"metrics:{','.join(metrics_diff)}")
+        if compare_event_id and live_event.get("event_id") != replay_event.get("event_id"):
+            reasons.append("event_id")
+        if reasons:
+            mismatches.append(
+                {
+                    "index": idx,
+                    "reason": ",".join(reasons),
+                    "live": live_event,
+                    "replay": replay_event,
+                    "live_payload": live_payload,
+                    "replay_payload": replay_payload,
+                }
+            )
+    return mismatches
+
+
+def _print_mismatches(mismatches: list[Dict[str, Any]], *, mode: str) -> None:
+    if not mismatches:
+        return
+    print("first 20 mismatches:")
+    for mismatch in mismatches[:20]:
+        if mode == "strict":
+            print(f"- index {mismatch.get('index')} reason={mismatch.get('reason')}")
+            live_event = mismatch.get("live")
+            replay_event = mismatch.get("replay")
+            if isinstance(live_event, dict):
+                print(
+                    f"  live: {live_event.get('timestamp')} {live_event.get('symbol')} line={live_event.get('line_no')}"
+                )
+            else:
+                print("  live: <missing>")
+            if isinstance(replay_event, dict):
+                print(
+                    f"  replay: {replay_event.get('timestamp')} {replay_event.get('symbol')} line={replay_event.get('line_no')}"
+                )
+            else:
+                print("  replay: <missing>")
+            if "payload" in str(mismatch.get("reason")):
+                print(f"  live payload: {mismatch.get('live_payload')}")
+                print(f"  replay payload: {mismatch.get('replay_payload')}")
+        else:
+            key = mismatch.get("key")
+            if isinstance(key, tuple):
+                timestamp, symbol = key
+                print(f"- {timestamp} {symbol} reason={mismatch.get('reason')}")
+            else:
+                print(f"- key={key} reason={mismatch.get('reason')}")
+            print(f"  live: {mismatch.get('live')}")
+            print(f"  replay: {mismatch.get('replay')}")
+
+
+def _parse_args(argv: list[str]) -> tuple[str, bool, list[str]]:
+    mode = "regime"
+    compare_event_id = False
+    paths: list[str] = []
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--compare-event-id":
+            compare_event_id = True
+        elif arg == "--mode":
+            if idx + 1 >= len(argv):
+                raise ValueError("missing mode value")
+            mode = argv[idx + 1]
+            idx += 1
+        elif arg.startswith("--mode="):
+            mode = arg.split("=", 1)[1]
+        else:
+            paths.append(arg)
+        idx += 1
+    return mode, compare_event_id, paths
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2:
-        print("usage: diff_live_vs_replay.py <live_jsonl> <replay_jsonl>")
+    try:
+        mode, compare_event_id, paths = _parse_args(args)
+    except ValueError:
+        print("usage: diff_live_vs_replay.py [--mode MODE] [--compare-event-id] <live_jsonl> <replay_jsonl>")
+        return 2
+    if mode not in ALLOWED_MODES:
+        print("usage: diff_live_vs_replay.py [--mode MODE] [--compare-event-id] <live_jsonl> <replay_jsonl>")
+        print(f"invalid mode: {mode}")
+        return 2
+    if len(paths) != 2:
+        print("usage: diff_live_vs_replay.py [--mode MODE] [--compare-event-id] <live_jsonl> <replay_jsonl>")
         return 2
 
-    live_path = Path(args[0])
-    replay_path = Path(args[1])
+    live_path = Path(paths[0])
+    replay_path = Path(paths[1])
 
-    live, live_skipped = _load_regimes(live_path)
-    replay, replay_skipped = _load_regimes(replay_path)
+    live_events, live_skipped = _load_events(live_path)
+    replay_events, replay_skipped = _load_events(replay_path)
 
-    mismatches = []
-    all_keys = sorted(set(live.keys()) | set(replay.keys()))
-    for key in all_keys:
-        live_entry = live.get(key)
-        replay_entry = replay.get(key)
-        if live_entry != replay_entry:
-            mismatches.append((key, live_entry, replay_entry))
+    if mode == "strict":
+        mismatches = _compare_strict(
+            live_events,
+            replay_events,
+            compare_event_id=compare_event_id,
+        )
+    else:
+        live_indexed = _index_by_key(live_events)
+        replay_indexed = _index_by_key(replay_events)
+        if mode == "payload":
+            mismatches = _compare_payload(
+                live_indexed,
+                replay_indexed,
+                compare_event_id=compare_event_id,
+            )
+        elif mode == "metrics":
+            mismatches = _compare_metrics(
+                live_indexed,
+                replay_indexed,
+                compare_event_id=compare_event_id,
+            )
+        else:
+            mismatches = _compare_regime(
+                live_indexed,
+                replay_indexed,
+                compare_event_id=compare_event_id,
+            )
 
     print(f"mismatches: {len(mismatches)}")
-    if mismatches:
-        print("first 20 mismatches:")
-        for key, live_entry, replay_entry in mismatches[:20]:
-            timestamp, symbol = key
-            print(f"- {timestamp} {symbol}")
-            print(f"  live: {live_entry}")
-            print(f"  replay: {replay_entry}")
+    _print_mismatches(mismatches, mode=mode)
 
     if live_skipped or replay_skipped:
         print(f"skipped lines: live={len(live_skipped)} replay={len(replay_skipped)}")
