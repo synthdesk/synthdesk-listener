@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
+
+try:  # pragma: no cover - platform-specific import
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 from synthdesk.event_envelope import EventEnvelope
 from synthdesk.event_envelope_validator import validate_event_envelope
+
+
+@contextmanager
+def _exclusive_lock(handle) -> None:
+    if fcntl is None:
+        yield
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def append_event_spine(path: str | Path, event: dict | EventEnvelope) -> None:
@@ -15,7 +34,10 @@ def append_event_spine(path: str | Path, event: dict | EventEnvelope) -> None:
     record = vars(event) if isinstance(event, EventEnvelope) else event
     line = json.dumps(record, separators=(",", ":"))
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", buffering=1) as handle:
-        handle.write(line)
-        handle.write("\n")
-        handle.flush()
+        with _exclusive_lock(handle):
+            handle.write(line)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
