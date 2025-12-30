@@ -116,6 +116,18 @@ def run(config_path: Optional[str] = None) -> None:
         resolved_path = Path(config_path) if config_path else Path(__file__).with_name("config.json")
         config = load_config(resolved_path)
 
+        vol_window = config.get("vol_window")
+        if not isinstance(vol_window, int) or isinstance(vol_window, bool) or vol_window <= 1:
+            _emit_invariant_violation(
+                event_spine_path,
+                "listener.vol_window_invalid",
+                "warning",
+                vol_window,
+                "vol_window must be int > 1",
+                "degraded",
+            )
+            config["vol_window"] = 2
+
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
 
         listener_started_at = datetime.now(timezone.utc)
