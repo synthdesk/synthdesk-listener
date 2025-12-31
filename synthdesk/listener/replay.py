@@ -283,10 +283,36 @@ class ReplayHarness:
         return regime_metrics
 
     @staticmethod
+    def _normalize_for_hash(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            normalized: Dict[Any, Any] = {}
+            for key in sorted(obj.keys(), key=lambda item: str(item)):
+                value = obj[key]
+                normalized_key = key if ReplayHarness._is_jsonable(key) else str(key)
+                normalized[normalized_key] = ReplayHarness._normalize_for_hash(value)
+            return normalized
+        if isinstance(obj, (list, tuple)):
+            return [ReplayHarness._normalize_for_hash(item) for item in obj]
+        if isinstance(obj, float):
+            return round(obj, 8)
+        if isinstance(obj, (int, str, bool)) or obj is None:
+            return obj
+        return obj if ReplayHarness._is_jsonable(obj) else str(obj)
+
+    @staticmethod
+    def _is_jsonable(obj: Any) -> bool:
+        try:
+            json.dumps(obj)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    @staticmethod
     def _stable_event_id(event_type: str, timestamp: str, payload: Dict[str, Any]) -> str:
-        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        basis = f"{event_type}|{timestamp}|{payload_json}"
-        return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+        normalized_payload = ReplayHarness._normalize_for_hash(payload)
+        canonical = {"event_type": event_type, "tick_ts": timestamp, "payload": normalized_payload}
+        canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
     def _emit_event(self, event_type: str, timestamp: str, payload: Dict[str, Any]) -> None:
         event = EventEnvelope(

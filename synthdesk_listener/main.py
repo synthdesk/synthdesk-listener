@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import socket
@@ -13,7 +14,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from synthdesk.event_envelope import EventEnvelope
 from synthdesk.event_spine_writer import append_event_spine
-from synthdesk.constants import REGIME_EPOCH_START
+from synthdesk.constants import REGIME_EPOCH_START_DT
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
 from synthdesk.listener.price_listener import PriceListener, fetch_prices
 from synthdesk.listener.replay import classify_regime
@@ -70,6 +71,38 @@ def _parse_iso8601(timestamp: str) -> Optional[datetime]:
         return datetime.fromisoformat(candidate)
     except ValueError:
         return None
+
+
+def _normalize_for_hash(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        normalized: Dict[Any, Any] = {}
+        for key in sorted(obj.keys(), key=lambda item: str(item)):
+            value = obj[key]
+            normalized_key = key if _is_jsonable(key) else str(key)
+            normalized[normalized_key] = _normalize_for_hash(value)
+        return normalized
+    if isinstance(obj, (list, tuple)):
+        return [_normalize_for_hash(item) for item in obj]
+    if isinstance(obj, float):
+        return round(obj, 8)
+    if isinstance(obj, (int, str, bool)) or obj is None:
+        return obj
+    return obj if _is_jsonable(obj) else str(obj)
+
+
+def _is_jsonable(obj: Any) -> bool:
+    try:
+        json.dumps(obj)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _stable_event_id(event_type: str, tick_ts: str, payload: Dict[str, Any]) -> str:
+    normalized_payload = _normalize_for_hash(payload)
+    canonical = {"event_type": event_type, "tick_ts": tick_ts, "payload": normalized_payload}
+    canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def _emit_invariant_violation_payload(
@@ -178,6 +211,12 @@ def run(config_path: Optional[str] = None) -> None:
             safe_append_text(heartbeat_path, f"{hb_ts} alive")
             prices = fetch_prices(config["pairs"], logger=logger)
             now_ts = now_dt.isoformat()
+            tick_dt = _parse_iso8601(now_ts) or now_dt
+            if tick_dt.tzinfo is None:
+                tick_dt = tick_dt.replace(tzinfo=timezone.utc)
+            else:
+                tick_dt = tick_dt.astimezone(timezone.utc)
+            is_post_epoch = tick_dt >= REGIME_EPOCH_START_DT
             if len(prices) != len(config["pairs"]):
                 missing_pairs = [pair for pair in config["pairs"] if pair not in prices]
                 if missing_pairs:
@@ -223,7 +262,7 @@ def run(config_path: Optional[str] = None) -> None:
                             "all required metrics finite and non-null",
                             "ignored",
                         )
-                if now_ts >= REGIME_EPOCH_START:
+                if is_post_epoch:
                     regime_metrics: Dict[str, float] = {}
                     if isinstance(metrics, dict):
                         returns_mean = metrics.get("rolling_mean")
@@ -242,22 +281,27 @@ def run(config_path: Optional[str] = None) -> None:
                                 range_value = metrics.get("range")
                                 if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
                                     regime_metrics["range_pct"] = float(range_value) / float(price)
-                    tick_dt = _parse_iso8601(now_ts) or now_dt
                     regime, confidence = classify_regime(pair, regime_metrics, tick_dt.timestamp())
+                    tick_ts = tick_dt.astimezone(timezone.utc).isoformat()
                     regime_payload = {
                         "symbol": pair,
                         "regime": regime,
                         "confidence": confidence,
                         "window": window_label,
-                        "tick_ts": now_ts,
+                        "tick_ts": tick_ts,
                     }
+                    regime_event_id = (
+                        _stable_event_id("market.regime", tick_ts, regime_payload)
+                        if is_post_epoch
+                        else str(uuid.uuid4())
+                    )
                     try:
                         append_event_spine(
                             event_spine_path,
                             EventEnvelope(
-                                event_id=str(uuid.uuid4()),
+                                event_id=regime_event_id,
                                 event_type="market.regime",
-                                timestamp=now_ts,
+                                timestamp=tick_ts,
                                 source="synthdesk_listener",
                                 version=VERSION,
                                 host=socket.gethostname(),
@@ -270,23 +314,29 @@ def run(config_path: Optional[str] = None) -> None:
                     if prev_regime is None:
                         prev_regime_by_symbol[pair] = regime
                     elif prev_regime != regime:
+                        regime_change_payload = {
+                            "symbol": pair,
+                            "from": prev_regime,
+                            "to": regime,
+                            "confidence": confidence,
+                            "window": window_label,
+                        }
+                        regime_change_event_id = (
+                            _stable_event_id("market.regime_change", tick_ts, regime_change_payload)
+                            if is_post_epoch
+                            else str(uuid.uuid4())
+                        )
                         try:
                             append_event_spine(
                                 event_spine_path,
                                 EventEnvelope(
-                                    event_id=str(uuid.uuid4()),
+                                    event_id=regime_change_event_id,
                                     event_type="market.regime_change",
-                                    timestamp=now_ts,
+                                    timestamp=tick_ts,
                                     source="synthdesk_listener",
                                     version=VERSION,
                                     host=socket.gethostname(),
-                                    payload={
-                                        "symbol": pair,
-                                        "from": prev_regime,
-                                        "to": regime,
-                                        "confidence": confidence,
-                                        "window": window_label,
-                                    },
+                                    payload=regime_change_payload,
                                 ),
                             )
                         except OSError:

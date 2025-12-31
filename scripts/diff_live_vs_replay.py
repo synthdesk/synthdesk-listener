@@ -55,8 +55,34 @@ def _load_events(path: Path) -> tuple[list[Dict[str, Any]], list[int]]:
     return events, skipped_lines
 
 
+def _normalize_for_hash(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        normalized: Dict[Any, Any] = {}
+        for key in sorted(obj.keys(), key=lambda item: str(item)):
+            value = obj[key]
+            normalized_key = key if _is_jsonable(key) else str(key)
+            normalized[normalized_key] = _normalize_for_hash(value)
+        return normalized
+    if isinstance(obj, (list, tuple)):
+        return [_normalize_for_hash(item) for item in obj]
+    if isinstance(obj, float):
+        return round(obj, 8)
+    if isinstance(obj, (int, str, bool)) or obj is None:
+        return obj
+    return obj if _is_jsonable(obj) else str(obj)
+
+
+def _is_jsonable(obj: Any) -> bool:
+    try:
+        json.dumps(obj)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _normalize_payload(payload: Dict[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    normalized = _normalize_for_hash(payload)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 def _extract_metrics(payload: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -71,10 +97,12 @@ def _diff_metrics(live: Dict[str, Any] | None, replay: Dict[str, Any] | None) ->
         return []
     if live is None or replay is None:
         return ["metrics_missing"]
-    fields = sorted(set(live.keys()) | set(replay.keys()))
+    live_normalized = _normalize_for_hash(live)
+    replay_normalized = _normalize_for_hash(replay)
+    fields = sorted(set(live_normalized.keys()) | set(replay_normalized.keys()))
     diffs = []
     for field in fields:
-        if live.get(field) != replay.get(field):
+        if live_normalized.get(field) != replay_normalized.get(field):
             diffs.append(field)
     return diffs
 
@@ -239,15 +267,15 @@ def _compare_strict(
                 {"key": key, "reason": "missing", "live": live_event, "replay": replay_event}
             )
             continue
-        live_payload = live_event["payload"]
-        replay_payload = replay_event["payload"]
-        if live_payload.get("regime") != replay_payload.get("regime"):
+        live_payload = _normalize_payload(live_event["payload"])
+        replay_payload = _normalize_payload(replay_event["payload"])
+        if live_payload != replay_payload:
             mismatches.append(
                 {
                     "key": key,
-                    "reason": "regime",
-                    "live": live_payload.get("regime"),
-                    "replay": replay_payload.get("regime"),
+                    "reason": "payload",
+                    "live": live_payload,
+                    "replay": replay_payload,
                 }
             )
             continue

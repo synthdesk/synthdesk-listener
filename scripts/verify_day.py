@@ -18,7 +18,11 @@ def _error(message: str) -> int:
 
 
 def _find_event_spine(day_dir: Path) -> Path | None:
-    candidates = [day_dir.parent / "event_spine.jsonl", day_dir.parent.parent / "event_spine.jsonl"]
+    candidates = [
+        day_dir / "event_spine.jsonl",
+        day_dir.parent / "event_spine.jsonl",
+        day_dir.parent.parent / "event_spine.jsonl",
+    ]
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
             return candidate
@@ -67,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             "scripts.diff_live_vs_replay",
             "--mode",
             "strict",
+            "--compare-event-id",
             str(event_spine),
             str(temp_path),
         ]
