@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from synthdesk.event_envelope import EventEnvelope
+from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.listener.version import VERSION
 
@@ -116,9 +116,10 @@ def _emit_downtime(event_spine: Path, payload: dict) -> None:
     event = EventEnvelope(
         event_id=str(uuid.uuid4()),
         event_type="listener.downtime",
-        timestamp=_utc_now().isoformat(),
+        timestamp=_utc_now(),
         source="synthdesk_watchdog",
         version=VERSION,
+        schema_version=EVENT_ENVELOPE_VERSION,
         host=socket.gethostname(),
         payload=payload,
     )

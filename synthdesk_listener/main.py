@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from synthdesk.event_envelope import EventEnvelope
+from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.constants import REGIME_EPOCH_START_DT
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
@@ -52,9 +52,10 @@ def _emit_listener_event(event_spine_path: Path, event_type: str, payload: Dict[
     event = EventEnvelope(
         event_id=str(uuid.uuid4()),
         event_type=event_type,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(timezone.utc),
         source="synthdesk_listener",
         version=VERSION,
+        schema_version=EVENT_ENVELOPE_VERSION,
         host=socket.gethostname(),
         payload=payload,
     )
@@ -301,9 +302,10 @@ def run(config_path: Optional[str] = None) -> None:
                             EventEnvelope(
                                 event_id=regime_event_id,
                                 event_type="market.regime",
-                                timestamp=tick_ts,
+                                timestamp=tick_dt.astimezone(timezone.utc),
                                 source="synthdesk_listener",
                                 version=VERSION,
+                                schema_version=EVENT_ENVELOPE_VERSION,
                                 host=socket.gethostname(),
                                 payload=regime_payload,
                             ),
@@ -332,9 +334,10 @@ def run(config_path: Optional[str] = None) -> None:
                                 EventEnvelope(
                                     event_id=regime_change_event_id,
                                     event_type="market.regime_change",
-                                    timestamp=tick_ts,
+                                    timestamp=tick_dt.astimezone(timezone.utc),
                                     source="synthdesk_listener",
                                     version=VERSION,
+                                    schema_version=EVENT_ENVELOPE_VERSION,
                                     host=socket.gethostname(),
                                     payload=regime_change_payload,
                                 ),

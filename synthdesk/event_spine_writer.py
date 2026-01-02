@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 try:  # pragma: no cover - platform-specific import
@@ -12,7 +13,7 @@ try:  # pragma: no cover - platform-specific import
 except ImportError:  # pragma: no cover - Windows
     fcntl = None
 
-from synthdesk.event_envelope import EventEnvelope
+from synthdesk_spine import EventEnvelope
 from synthdesk.event_envelope_validator import validate_event_envelope
 
 
@@ -31,7 +32,13 @@ def _exclusive_lock(handle) -> None:
 def append_event_spine(path: str | Path, event: dict | EventEnvelope) -> None:
     """Append a validated event to a JSONL spine file."""
     validate_event_envelope(event)
-    record = vars(event) if isinstance(event, EventEnvelope) else event
+    if isinstance(event, EventEnvelope):
+        record = vars(event).copy()
+        # Convert datetime to ISO string for JSON serialization
+        if isinstance(record.get("timestamp"), datetime):
+            record["timestamp"] = record["timestamp"].isoformat()
+    else:
+        record = event
     line = json.dumps(record, separators=(",", ":"))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

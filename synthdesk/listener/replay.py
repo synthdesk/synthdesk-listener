@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from synthdesk.constants import REGIME_EPOCH_START
-from synthdesk.event_envelope import EventEnvelope
+from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.listener.price_listener import PriceListener
 from synthdesk.listener.version import VERSION
@@ -315,12 +315,15 @@ class ReplayHarness:
         return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
     def _emit_event(self, event_type: str, timestamp: str, payload: Dict[str, Any]) -> None:
+        # Convert ISO string to timezone-aware datetime
+        ts_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         event = EventEnvelope(
             event_id=self._stable_event_id(event_type, timestamp, payload),
             event_type=event_type,
-            timestamp=timestamp,
+            timestamp=ts_dt,
             source="synthdesk_listener_replay",
             version=VERSION,
+            schema_version=EVENT_ENVELOPE_VERSION,
             host="replay",
             payload=payload,
         )
