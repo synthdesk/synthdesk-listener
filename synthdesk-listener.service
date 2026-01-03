@@ -1,0 +1,23 @@
+[Unit]
+Description=SynthDesk Listener v0.2.0
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+Group=%GROUP%
+WorkingDirectory=%REPO_PATH%/packages/listener
+Environment="PYTHONHASHSEED=0"
+Environment="PYTHONPATH=%REPO_PATH%/packages/listener"
+ExecStart=/usr/bin/python3 -m synthdesk_listener.main --config config.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits (optional but recommended for soak)
+MemoryMax=1G
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
