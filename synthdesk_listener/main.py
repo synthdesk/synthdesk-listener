@@ -6,12 +6,14 @@ import hashlib
 import json
 import math
 import socket
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import synthdesk_spine
 from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.constants import REGIME_EPOCH_START_DT
@@ -20,6 +22,10 @@ from synthdesk.listener.price_listener import PriceListener, fetch_prices
 from synthdesk.listener.replay import classify_regime
 from synthdesk.listener.version import VERSION
 from synthdesk.utils.logging_utils import configure_logging
+
+# Spine SDK version contract
+REQUIRED_SPINE_MAJOR = 0
+REQUIRED_SPINE_MINOR = 1
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "poll_interval_seconds": 10,
@@ -46,6 +52,40 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         loaded = json.load(handle)
     config = {**DEFAULT_CONFIG, **loaded}
     return config
+
+
+def _check_spine_version() -> tuple[str, bool]:
+    """
+    Check spine SDK version against contract.
+
+    Returns (version_string, has_warning) where:
+    - version_string: actual spine SDK version
+    - has_warning: True if minor version mismatch (logged but not fatal)
+
+    Raises RuntimeError if major version mismatch.
+    """
+    actual_version = synthdesk_spine.__version__
+    try:
+        parts = actual_version.split(".")
+        actual_major = int(parts[0])
+        actual_minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        raise RuntimeError(
+            f"Invalid spine SDK version format: {actual_version} "
+            f"(expected semver X.Y.Z)"
+        )
+
+    # Hard fail on major version mismatch
+    if actual_major != REQUIRED_SPINE_MAJOR:
+        raise RuntimeError(
+            f"Spine SDK major version mismatch: found {actual_version}, "
+            f"required {REQUIRED_SPINE_MAJOR}.x\n"
+            f"This listener cannot run with incompatible spine SDK major version."
+        )
+
+    # Warn on minor version mismatch
+    has_warning = actual_minor != REQUIRED_SPINE_MINOR
+    return actual_version, has_warning
 
 
 def _emit_listener_event(event_spine_path: Path, event_type: str, payload: Dict[str, Any]) -> None:
@@ -150,6 +190,9 @@ def run(config_path: Optional[str] = None) -> None:
     logger = None
     event_spine_path = Path(__file__).resolve().parents[1] / "runs" / VERSION / "event_spine.jsonl"
     try:
+        # Check spine SDK version before doing anything else
+        spine_version, spine_version_warning = _check_spine_version()
+
         resolved_path = Path(config_path) if config_path else Path(__file__).with_name("config.json")
         config = load_config(resolved_path)
 
@@ -166,6 +209,15 @@ def run(config_path: Optional[str] = None) -> None:
             config["vol_window"] = 2
 
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
+
+        # Log spine version warning if present
+        if spine_version_warning:
+            logger.warning(
+                "Spine SDK minor version mismatch: found %s, expected %d.%d",
+                spine_version,
+                REQUIRED_SPINE_MAJOR,
+                REQUIRED_SPINE_MINOR,
+            )
 
         listener_started_at = datetime.now(timezone.utc)
         heartbeat_gap_violation_emitted = False
@@ -189,13 +241,22 @@ def run(config_path: Optional[str] = None) -> None:
         poll_interval = max(1, int(config.get("poll_interval_seconds", 10)))
         window_label = f"{int(config.get('vol_window', 0))}ticks"
 
+        # Emit listener.start with full version metadata for auditability
+        listener_start_payload = {
+            "pairs": config.get("pairs"),
+            "poll_interval_seconds": poll_interval,
+            "spine_sdk_version": spine_version,
+            "python_version": sys.version.split()[0],  # e.g., "3.12.3"
+        }
+        if spine_version_warning:
+            listener_start_payload["spine_version_warning"] = (
+                f"minor version mismatch: expected {REQUIRED_SPINE_MAJOR}.{REQUIRED_SPINE_MINOR}"
+            )
+
         _emit_listener_event(
             event_spine_path,
             "listener.start",
-            {
-                "pairs": config.get("pairs"),
-                "poll_interval_seconds": poll_interval,
-            },
+            listener_start_payload,
         )
 
         listener = PriceListener(
