@@ -15,6 +15,14 @@ from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.listener.price_listener import PriceListener
 from synthdesk.listener.version import VERSION
 
+def _quantize_confidence(confidence: float) -> float:
+    """
+    Quantize confidence to 6 decimal places to prevent floating-point drift.
+    This ensures deterministic replay by eliminating accumulation errors.
+    """
+    return round(confidence, 6)
+
+
 try:
     from synthdesk.listener.regime_classifier import classify_regime
 except Exception:
@@ -45,9 +53,14 @@ except Exception:
         if returns_mean is None and vol is None:
             return "chop", 0.0
 
-        high_vol_threshold = 0.0025
+        # Thresholds calibrated against 2025-12-30 to 2026-01-10 tick data:
+        # - drift_threshold: p75 of |returns_mean| (~0.000019)
+        # - high_vol_threshold: p90 of returns_std (~0.00018)
+        # Old values (0.0003 drift, 0.0025 high_vol) were ~15x too conservative,
+        # causing 97%+ chop classification.
+        high_vol_threshold = 0.00020  # p90 of returns_std, rounded up
         breakout_mult = 2.5
-        drift_threshold = 0.0003
+        drift_threshold = 0.00002  # p75 of |returns_mean|, rounded up
 
         abs_mean = abs(returns_mean) if returns_mean is not None else 0.0
         vol_value = vol if vol is not None else 0.0
@@ -64,17 +77,17 @@ except Exception:
         if is_high_vol:
             confidence = (vol_value - high_vol_threshold) / high_vol_threshold
             confidence = max(0.0, min(1.0, confidence))
-            return "high_vol", confidence
+            return "high_vol", _quantize_confidence(confidence)
 
         if is_breakout:
             confidence = (abs_mean - breakout_mult * vol_value) / (breakout_mult * vol_value)
             confidence = max(0.0, min(1.0, confidence))
-            return "breakout", confidence
+            return "breakout", _quantize_confidence(confidence)
 
         if is_drift:
             confidence = (abs_mean - drift_threshold) / drift_threshold
             confidence = max(0.0, min(1.0, confidence))
-            return "drift", confidence
+            return "drift", _quantize_confidence(confidence)
 
         vol_prox = vol_value / high_vol_threshold if vol is not None else 0.0
         breakout_prox = (
@@ -86,7 +99,7 @@ except Exception:
         max_prox = max(min(1.0, vol_prox), min(1.0, breakout_prox), min(1.0, drift_prox))
         confidence = 1.0 - max_prox
         confidence = max(0.0, min(1.0, confidence))
-        return "chop", confidence
+        return "chop", _quantize_confidence(confidence)
 
 
 @dataclass
@@ -115,7 +128,7 @@ class ReplayHarness:
 
     def run(self) -> ReplaySummary:
         pairs = self._collect_pairs()
-        listener = PriceListener(pairs=pairs, vol_window=self.vol_window, logger=None)
+        listener = PriceListener(pairs=pairs, vol_window=self.vol_window, logger=None, stateless=True)
         prev_regime_by_symbol: Dict[str, str] = {}
 
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
