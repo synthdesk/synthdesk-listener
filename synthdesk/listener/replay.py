@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,6 +15,49 @@ from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.listener.price_listener import PriceListener
 from synthdesk.listener.version import VERSION
 
+
+# ---------------------------
+# Regime Thresholds (Frozen)
+# ---------------------------
+
+@dataclass(frozen=True)
+class RegimeThresholds:
+    """
+    Frozen regime classification thresholds with calibration metadata.
+
+    These thresholds are derived from empirical tick data analysis.
+    Any modification requires re-calibration against fresh data.
+    """
+
+    # Core thresholds
+    drift_threshold: float
+    high_vol_threshold: float
+    breakout_mult: float
+
+    # Calibration metadata (frozen, for auditability)
+    calibration_window: str
+    calibration_date: str
+    drift_percentile: str  # e.g., "p75 of |returns_mean|"
+    high_vol_percentile: str  # e.g., "p90 of returns_std"
+    sample_count: int
+    notes: str = ""
+
+
+# Canonical thresholds derived from 2025-12-30 to 2026-01-10 tick data
+# DO NOT MODIFY without re-running calibration analysis
+REGIME_THRESHOLDS_V1 = RegimeThresholds(
+    drift_threshold=0.00002,
+    high_vol_threshold=0.00020,
+    breakout_mult=2.5,
+    calibration_window="2025-12-30 to 2026-01-10",
+    calibration_date="2026-01-10",
+    drift_percentile="p75 of |returns_mean| (~0.000019, rounded up)",
+    high_vol_percentile="p90 of returns_std (~0.00018, rounded up)",
+    sample_count=5775,
+    notes="Old values (0.0003 drift, 0.0025 high_vol) were ~15x too conservative",
+)
+
+
 def _quantize_confidence(confidence: float) -> float:
     """
     Quantize confidence to 6 decimal places to prevent floating-point drift.
@@ -23,83 +66,101 @@ def _quantize_confidence(confidence: float) -> float:
     return round(confidence, 6)
 
 
+def _classify_regime_with_thresholds(
+    symbol: str,
+    metrics: dict,
+    ts: float,
+    thresholds: RegimeThresholds,
+) -> tuple[str, float]:
+    """
+    Classify market regime from tick metrics using frozen thresholds.
+
+    Args:
+        symbol: Symbol identifier (unused but kept for interface compatibility)
+        metrics: Dict with returns_mean, returns_std, volatility, range_pct
+        ts: Timestamp (unused but kept for interface compatibility)
+        thresholds: Frozen RegimeThresholds instance
+
+    Returns:
+        (regime_label, confidence) tuple
+    """
+    if not isinstance(metrics, dict):
+        return "chop", 0.0
+
+    def _as_float(value: object) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    returns_mean = _as_float(metrics.get("returns_mean"))
+    returns_std = _as_float(metrics.get("returns_std"))
+    volatility = _as_float(metrics.get("volatility"))
+    range_pct = _as_float(metrics.get("range_pct"))
+
+    if returns_mean is None and returns_std is None and volatility is None and range_pct is None:
+        return "chop", 0.0
+
+    vol = volatility if volatility is not None else returns_std
+    if returns_mean is None and vol is None:
+        return "chop", 0.0
+
+    # Use frozen thresholds
+    high_vol_threshold = thresholds.high_vol_threshold
+    breakout_mult = thresholds.breakout_mult
+    drift_threshold = thresholds.drift_threshold
+
+    abs_mean = abs(returns_mean) if returns_mean is not None else 0.0
+    vol_value = vol if vol is not None else 0.0
+
+    is_high_vol = vol is not None and vol_value > high_vol_threshold
+    is_breakout = (
+        returns_mean is not None
+        and vol is not None
+        and vol_value > 0.0
+        and abs_mean > breakout_mult * vol_value
+    )
+    is_drift = returns_mean is not None and abs_mean > drift_threshold
+
+    if is_high_vol:
+        confidence = (vol_value - high_vol_threshold) / high_vol_threshold
+        confidence = max(0.0, min(1.0, confidence))
+        return "high_vol", _quantize_confidence(confidence)
+
+    if is_breakout:
+        confidence = (abs_mean - breakout_mult * vol_value) / (breakout_mult * vol_value)
+        confidence = max(0.0, min(1.0, confidence))
+        return "breakout", _quantize_confidence(confidence)
+
+    if is_drift:
+        confidence = (abs_mean - drift_threshold) / drift_threshold
+        confidence = max(0.0, min(1.0, confidence))
+        return "drift", _quantize_confidence(confidence)
+
+    vol_prox = vol_value / high_vol_threshold if vol is not None else 0.0
+    breakout_prox = (
+        abs_mean / (breakout_mult * vol_value)
+        if returns_mean is not None and vol is not None and vol_value > 0.0
+        else 0.0
+    )
+    drift_prox = abs_mean / drift_threshold if returns_mean is not None else 0.0
+    max_prox = max(min(1.0, vol_prox), min(1.0, breakout_prox), min(1.0, drift_prox))
+    confidence = 1.0 - max_prox
+    confidence = max(0.0, min(1.0, confidence))
+    return "chop", _quantize_confidence(confidence)
+
+
 try:
     from synthdesk.listener.regime_classifier import classify_regime
 except Exception:
     def classify_regime(symbol: str, metrics: dict, ts: float) -> tuple[str, float]:
         """
-        Observational stub (mirrors synthdesk/packages/listener implementation).
-        Returns a regime label and confidence.
+        Classify market regime using canonical frozen thresholds.
+
+        This is the production entry point. Uses REGIME_THRESHOLDS_V1.
         """
-        if not isinstance(metrics, dict):
-            return "chop", 0.0
-
-        def _as_float(value: object) -> Optional[float]:
-            if isinstance(value, bool):
-                return None
-            if isinstance(value, (int, float)):
-                return float(value)
-            return None
-
-        returns_mean = _as_float(metrics.get("returns_mean"))
-        returns_std = _as_float(metrics.get("returns_std"))
-        volatility = _as_float(metrics.get("volatility"))
-        range_pct = _as_float(metrics.get("range_pct"))
-
-        if returns_mean is None and returns_std is None and volatility is None and range_pct is None:
-            return "chop", 0.0
-
-        vol = volatility if volatility is not None else returns_std
-        if returns_mean is None and vol is None:
-            return "chop", 0.0
-
-        # Thresholds calibrated against 2025-12-30 to 2026-01-10 tick data:
-        # - drift_threshold: p75 of |returns_mean| (~0.000019)
-        # - high_vol_threshold: p90 of returns_std (~0.00018)
-        # Old values (0.0003 drift, 0.0025 high_vol) were ~15x too conservative,
-        # causing 97%+ chop classification.
-        high_vol_threshold = 0.00020  # p90 of returns_std, rounded up
-        breakout_mult = 2.5
-        drift_threshold = 0.00002  # p75 of |returns_mean|, rounded up
-
-        abs_mean = abs(returns_mean) if returns_mean is not None else 0.0
-        vol_value = vol if vol is not None else 0.0
-
-        is_high_vol = vol is not None and vol_value > high_vol_threshold
-        is_breakout = (
-            returns_mean is not None
-            and vol is not None
-            and vol_value > 0.0
-            and abs_mean > breakout_mult * vol_value
-        )
-        is_drift = returns_mean is not None and abs_mean > drift_threshold
-
-        if is_high_vol:
-            confidence = (vol_value - high_vol_threshold) / high_vol_threshold
-            confidence = max(0.0, min(1.0, confidence))
-            return "high_vol", _quantize_confidence(confidence)
-
-        if is_breakout:
-            confidence = (abs_mean - breakout_mult * vol_value) / (breakout_mult * vol_value)
-            confidence = max(0.0, min(1.0, confidence))
-            return "breakout", _quantize_confidence(confidence)
-
-        if is_drift:
-            confidence = (abs_mean - drift_threshold) / drift_threshold
-            confidence = max(0.0, min(1.0, confidence))
-            return "drift", _quantize_confidence(confidence)
-
-        vol_prox = vol_value / high_vol_threshold if vol is not None else 0.0
-        breakout_prox = (
-            abs_mean / (breakout_mult * vol_value)
-            if returns_mean is not None and vol is not None and vol_value > 0.0
-            else 0.0
-        )
-        drift_prox = abs_mean / drift_threshold if returns_mean is not None else 0.0
-        max_prox = max(min(1.0, vol_prox), min(1.0, breakout_prox), min(1.0, drift_prox))
-        confidence = 1.0 - max_prox
-        confidence = max(0.0, min(1.0, confidence))
-        return "chop", _quantize_confidence(confidence)
+        return _classify_regime_with_thresholds(symbol, metrics, ts, REGIME_THRESHOLDS_V1)
 
 
 @dataclass
