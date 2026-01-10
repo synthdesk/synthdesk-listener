@@ -6,7 +6,7 @@ import json
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -17,9 +17,19 @@ from synthdesk.listener.version import VERSION
 API_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
 
 
-def fetch_price(pair: str, logger=None) -> Optional[float]:
-    """Fetch latest price for a trading pair from Binance public API."""
+def fetch_price(pair: str, logger=None) -> Optional[Tuple[float, datetime, datetime, str]]:
+    """
+    Fetch latest price and timestamps from Binance public API.
+
+    Returns:
+        (price, exchange_ts, receipt_ts, ts_authority) tuple or None on failure.
+
+    Note: Binance /api/v3/ticker/price does NOT provide exchange timestamps,
+    so exchange_ts == receipt_ts and ts_authority is always "receipt_fallback".
+    """
+    receipt_ts = datetime.now(timezone.utc)  # Capture immediately at ingestion boundary
     url = API_URL.format(symbol=pair)
+
     try:
         with urlopen(url, timeout=10) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -28,21 +38,34 @@ def fetch_price(pair: str, logger=None) -> Optional[float]:
                 if logger:
                     logger.warning("Unexpected response for %s: %s", pair, data)
                 return None
-            return float(price_str)
+
+            price = float(price_str)
+
+            # Binance /api/v3/ticker/price does NOT provide exchange timestamp
+            # Use receipt_ts as fallback (explicit, not silent)
+            exchange_ts = receipt_ts
+            ts_authority = "receipt_fallback"
+
+            return (price, exchange_ts, receipt_ts, ts_authority)
     except (URLError, ValueError) as exc:
         if logger:
             logger.error("Failed to fetch price for %s: %s", pair, exc)
         return None
 
 
-def fetch_prices(pairs: Iterable[str], logger=None) -> Dict[str, float]:
-    """Fetch prices for multiple pairs, skipping failures."""
-    prices: Dict[str, float] = {}
+def fetch_prices(pairs: Iterable[str], logger=None) -> Dict[str, Tuple[float, datetime, datetime, str]]:
+    """
+    Fetch prices and timestamps for multiple pairs, skipping failures.
+
+    Returns:
+        Dict mapping pair -> (price, exchange_ts, receipt_ts, ts_authority)
+    """
+    results: Dict[str, Tuple[float, datetime, datetime, str]] = {}
     for pair in pairs:
-        price = fetch_price(pair, logger=logger)
-        if price is not None:
-            prices[pair] = price
-    return prices
+        result = fetch_price(pair, logger=logger)
+        if result is not None:
+            results[pair] = result
+    return results
 
 
 class PriceTracker:
@@ -120,10 +143,13 @@ class PriceListener:
         pairs: Iterable[str],
         vol_window: int,
         logger=None,
+        *,
+        stateless: bool = False,
     ) -> None:
         self.pairs = list(pairs)
         self.vol_window = vol_window
         self.logger = logger
+        self.stateless = stateless
 
         base = Path(__file__).resolve().parents[2] / "runs" / VERSION
         base.mkdir(parents=True, exist_ok=True)
@@ -131,7 +157,7 @@ class PriceListener:
         self.seq_meta_path = base / "sequence_meta.json"
 
         self.tick_seq = 0
-        if self.seq_meta_path.exists():
+        if not self.stateless and self.seq_meta_path.exists():
             try:
                 with self.seq_meta_path.open("r", encoding="utf-8") as fh:
                     data = json.load(fh)
@@ -141,12 +167,13 @@ class PriceListener:
 
         self.last_ts_per_pair: Dict[str, str] = {}
         self.trackers = {}
-        day_dir = self._current_day_dir()
+        day_dir = self._current_day_dir() if not self.stateless else None
         for pair in self.pairs:
             tracker = PriceTracker(pair, vol_window)
-            state_path = day_dir / f"state_{pair}.json"
-            if state_path.exists():
-                tracker.load_state(state_path)
+            if not self.stateless and day_dir:
+                state_path = day_dir / f"state_{pair}.json"
+                if state_path.exists():
+                    tracker.load_state(state_path)
             self.trackers[pair] = tracker
 
     def _current_day_dir(self) -> Path:
@@ -207,8 +234,9 @@ class PriceListener:
         if not metrics:
             return {}
 
-        state_path = day_dir / f"state_{pair}.json"
-        tracker.save_state(state_path)
+        if not self.stateless:
+            state_path = day_dir / f"state_{pair}.json"
+            tracker.save_state(state_path)
 
         anchor = self.pairs[0] if self.pairs else None
         if anchor and anchor in self.trackers:

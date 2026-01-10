@@ -29,3 +29,21 @@ scope: atomicity, restart behavior, state contracts
 - lexicographic timestamp ordering is a relied-upon contract
 
 follow-ups: deferred
+
+---
+
+## 2026-01-04 — daily audit
+
+status: pass
+duration: 10 min
+
+### findings
+- listener running (pid 596468, started 2026-01-03)
+- event_spine.jsonl: 92M, last modified 2026-01-04 14:56 UTC
+- spine growth: confirmed (daily data directories present through 2026-01-04)
+- listener.crash events: 0
+- replay checksum: not present in current implementation
+
+### notes
+- no issues observed
+- system operating nominally

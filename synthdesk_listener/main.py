@@ -268,35 +268,38 @@ def run(config_path: Optional[str] = None) -> None:
 
         logger.info("Starting listener for pairs %s with poll interval %ss", config["pairs"], poll_interval)
         while True:
-            now_dt = datetime.now(timezone.utc)
-            hb_ts = now_dt.isoformat()
-            safe_append_text(heartbeat_path, f"{hb_ts} alive")
-            prices = fetch_prices(config["pairs"], logger=logger)
-            now_ts = now_dt.isoformat()
-            tick_dt = _parse_iso8601(now_ts) or now_dt
-            if tick_dt.tzinfo is None:
-                tick_dt = tick_dt.replace(tzinfo=timezone.utc)
-            else:
-                tick_dt = tick_dt.astimezone(timezone.utc)
-            is_post_epoch = tick_dt >= REGIME_EPOCH_START_DT
-            if len(prices) != len(config["pairs"]):
-                missing_pairs = [pair for pair in config["pairs"] if pair not in prices]
+            # Capture observer receipt time at loop entry (used for lifecycle events)
+            receipt_dt = datetime.now(timezone.utc)
+            receipt_ts = receipt_dt.isoformat()
+
+            safe_append_text(heartbeat_path, f"{receipt_ts} alive")
+
+            # Fetch prices with timestamps (timestamp authority v0.1)
+            price_results = fetch_prices(config["pairs"], logger=logger)
+
+            if len(price_results) != len(config["pairs"]):
+                missing_pairs = [pair for pair in config["pairs"] if pair not in price_results]
                 if missing_pairs:
                     _emit_invariant_violation(
                         event_spine_path,
                         "listener.missing_observation",
                         "warning",
-                        {"timestamp": now_ts, "missing_pairs": missing_pairs},
+                        {"timestamp": receipt_ts, "missing_pairs": missing_pairs},
                         "observation for each configured pair in poll cycle",
                         "degraded",
                     )
-            for pair, price in prices.items():
+
+            for pair, (price, exchange_ts, tick_receipt_ts, ts_authority) in price_results.items():
+                # Use exchange_ts as authoritative tick time
+                tick_dt = exchange_ts
+                tick_ts = tick_dt.isoformat()
+                is_post_epoch = tick_dt >= REGIME_EPOCH_START_DT
                 prev_ts = listener.last_ts_per_pair.get(pair)
                 if price is not None:
                     header = ["timestamp", "pair", "price"]
-                    row = [now_ts, pair, price]
+                    row = [tick_ts, pair, price]
                     safe_append_csv(prices_path, row, header=header)
-                metrics = listener.process_tick(pair, price, timestamp=now_ts)
+                metrics = listener.process_tick(pair, price, timestamp=tick_ts)
                 if isinstance(metrics, dict) and metrics:
                     invalid_metrics: Dict[str, Any] = {}
                     required_fields = (
@@ -344,13 +347,19 @@ def run(config_path: Optional[str] = None) -> None:
                                 if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
                                     regime_metrics["range_pct"] = float(range_value) / float(price)
                     regime, confidence = classify_regime(pair, regime_metrics, tick_dt.timestamp())
-                    tick_ts = tick_dt.astimezone(timezone.utc).isoformat()
+                    # Timestamp authority fields (v0.1)
+                    latency_ms = int((tick_receipt_ts - exchange_ts).total_seconds() * 1000)
                     regime_payload = {
                         "symbol": pair,
                         "regime": regime,
                         "confidence": confidence,
                         "window": window_label,
                         "tick_ts": tick_ts,
+                        "exchange_ts": exchange_ts.isoformat(),
+                        "receipt_ts": tick_receipt_ts.isoformat(),
+                        "ts_authority": ts_authority,
+                        "ts_source": "binance.rest.ticker_price",
+                        "latency_ms": latency_ms,
                     }
                     regime_event_id = (
                         _stable_event_id("market.regime", tick_ts, regime_payload)
@@ -383,6 +392,11 @@ def run(config_path: Optional[str] = None) -> None:
                             "to": regime,
                             "confidence": confidence,
                             "window": window_label,
+                            "exchange_ts": exchange_ts.isoformat(),
+                            "receipt_ts": tick_receipt_ts.isoformat(),
+                            "ts_authority": ts_authority,
+                            "ts_source": "binance.rest.ticker_price",
+                            "latency_ms": latency_ms,
                         }
                         regime_change_event_id = (
                             _stable_event_id("market.regime_change", tick_ts, regime_change_payload)
@@ -406,12 +420,12 @@ def run(config_path: Optional[str] = None) -> None:
                         except OSError:
                             pass
                         prev_regime_by_symbol[pair] = regime
-                if prev_ts is not None and now_ts <= prev_ts:
+                if prev_ts is not None and tick_ts <= prev_ts:
                     _emit_invariant_violation(
                         event_spine_path,
                         "listener.timestamp_non_monotonic",
                         "warning",
-                        {"prev_ts": prev_ts, "now_ts": now_ts},
+                        {"prev_ts": prev_ts, "now_ts": tick_ts},
                         "timestamps strictly increasing",
                         "ignored",
                     )
@@ -421,14 +435,14 @@ def run(config_path: Optional[str] = None) -> None:
                     last_dt = _parse_iso8601(last_ts) if last_ts else None
                     if last_dt is None:
                         last_dt = listener_started_at
-                    gap_seconds = (now_dt - last_dt).total_seconds()
+                    gap_seconds = (receipt_dt - last_dt).total_seconds()
                     if gap_seconds > 30:
                         _emit_invariant_violation_payload(
                             event_spine_path,
                             "inv-heartbeat-gap-30s",
                             "critical",
                             {"reason": "heartbeat gap exceeded 30s"},
-                            timestamp=now_ts,
+                            timestamp=receipt_ts,
                         )
                         heartbeat_gap_violation_emitted = True
                         break
