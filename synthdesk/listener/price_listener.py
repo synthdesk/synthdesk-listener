@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,34 @@ from urllib.request import urlopen
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
 from synthdesk.listener.transforms import log_return, log_returns, price_range, rolling_corr, rolling_mean, rolling_std, slope, zscore
 from synthdesk.listener.version import VERSION
+
+
+# =============================================================================
+# Per-Symbol Normalization Constants (Frozen)
+# =============================================================================
+# These constants define the EWMA volatility estimator used to normalize
+# returns into z-space before regime classification.
+#
+# DO NOT MODIFY without understanding the implications for regime thresholds.
+# =============================================================================
+
+# EWMA decay factor: λ = exp(ln(0.5) / H) where H = half-life in ticks
+# For 30-minute half-life at 10s tick interval: H = 180 ticks
+EWMA_LAMBDA = 0.9962  # exp(ln(0.5) / 180) ≈ 0.99615
+
+# Minimum σ floor to prevent division by zero at startup or during stale periods
+SIGMA_MIN = 1e-8
+
+# Quantization factor for deterministic emission (6 decimal places)
+Z_QUANTIZATION = 1_000_000
+
+
+def _quantize_z(value: float) -> float:
+    """
+    Quantize z-space value to 6 decimal places for deterministic emission.
+    This prevents floating-point drift across different platforms/runs.
+    """
+    return round(value * Z_QUANTIZATION) / Z_QUANTIZATION
 
 API_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
 
@@ -69,7 +98,7 @@ def fetch_prices(pairs: Iterable[str], logger=None) -> Dict[str, Tuple[float, da
 
 
 class PriceTracker:
-    """Track rolling metrics for a single pair."""
+    """Track rolling metrics for a single pair with per-symbol normalization."""
 
     def __init__(self, pair: str, window: int) -> None:
         self.pair = pair
@@ -78,12 +107,24 @@ class PriceTracker:
         self.short_window = min(max(5, window // 3), window)
         self.prices: deque[float] = deque(maxlen=window)
 
+        # Z-space: normalized returns buffer (same window as prices)
+        self.z_returns: deque[float] = deque(maxlen=window)
+
+        # EWMA volatility state (per-symbol)
+        self.ewma_var: float = 0.0
+        self.ewma_sigma: float = 0.0
+        self.ewma_initialized: bool = False
+
     def save_state(self, path: Path) -> None:
         data = {
             "pair": self.pair,
             "prices": list(self.prices),
+            "z_returns": list(self.z_returns),
             "short_window": self.short_window,
             "long_window": self.long_window,
+            "ewma_var": self.ewma_var,
+            "ewma_sigma": self.ewma_sigma,
+            "ewma_initialized": self.ewma_initialized,
         }
         atomic_write_json(path, data)
 
@@ -92,6 +133,11 @@ class PriceTracker:
             data = json.load(f)
         # restore rolling window using long_window as maxlen
         self.prices = deque(data["prices"], maxlen=self.long_window)
+        # restore z-space state (backwards compatible)
+        self.z_returns = deque(data.get("z_returns", []), maxlen=self.long_window)
+        self.ewma_var = data.get("ewma_var", 0.0)
+        self.ewma_sigma = data.get("ewma_sigma", 0.0)
+        self.ewma_initialized = data.get("ewma_initialized", False)
 
     def update(self, price: float) -> Dict[str, float]:
         self.prices.append(price)
@@ -102,6 +148,10 @@ class PriceTracker:
         if len(history) < 2:
             return {
                 "log_return": 0.0,
+                "z_return": 0.0,
+                "z_mean": 0.0,
+                "z_std": 0.0,
+                "ewma_sigma": 0.0,
                 "rolling_mean": 0.0,
                 "rolling_std": 0.0,
                 "zscore": 0.0,
@@ -109,11 +159,44 @@ class PriceTracker:
                 "range": 0.0,
             }
 
+        # Compute raw log return
         try:
             last_lr = log_return(history[-2], history[-1])
         except ValueError:
             last_lr = 0.0
 
+        # =================================================================
+        # EWMA Volatility Update (per-symbol normalization)
+        # =================================================================
+        # v_t = λ * v_{t-1} + (1-λ) * r_t²
+        # σ_t = sqrt(v_t)
+        # z_t = r_t / max(σ_t, σ_min)
+        # =================================================================
+        if not self.ewma_initialized:
+            # Initialize with first return's squared value (avoid startup bias)
+            self.ewma_var = last_lr * last_lr
+            self.ewma_initialized = True
+        else:
+            self.ewma_var = EWMA_LAMBDA * self.ewma_var + (1 - EWMA_LAMBDA) * (last_lr * last_lr)
+
+        self.ewma_sigma = math.sqrt(self.ewma_var)
+
+        # Compute normalized z-return
+        z_return = last_lr / max(self.ewma_sigma, SIGMA_MIN)
+
+        # Append z-return to rolling buffer (this is what regime classification uses)
+        self.z_returns.append(z_return)
+
+        # =================================================================
+        # Z-Space Rolling Features (for regime classification)
+        # =================================================================
+        z_list = list(self.z_returns)
+        z_mean = rolling_mean(z_list, len(z_list)) if z_list else 0.0
+        z_std = rolling_std(z_list, len(z_list)) if z_list else 0.0
+
+        # =================================================================
+        # Legacy Raw Metrics (kept for backwards compatibility)
+        # =================================================================
         returns_window = min(self.long_window - 1, len(history) - 1)
         returns = log_returns(history, returns_window)
 
@@ -126,6 +209,13 @@ class PriceTracker:
         current_range = price_range(history, min(self.long_window, len(history)))
 
         return {
+            # Z-space metrics (PRIMARY for regime classification)
+            # Quantized for deterministic emission
+            "z_return": _quantize_z(z_return),
+            "z_mean": _quantize_z(z_mean),
+            "z_std": _quantize_z(z_std),
+            "ewma_sigma": _quantize_z(self.ewma_sigma),
+            # Legacy raw metrics (kept for backwards compatibility)
             "log_return": last_lr,
             "rolling_mean": mean,
             "rolling_std": std,
