@@ -19,7 +19,11 @@ from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.constants import REGIME_EPOCH_START_DT
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
 from synthdesk.listener.price_listener import PriceListener, fetch_prices
-from synthdesk.listener.replay import classify_regime
+from synthdesk.listener.regime_classifier import (
+    classify_regime_full,
+    REGIME_THRESHOLDS_V1,
+    validate_window_config,
+)
 from synthdesk.listener.version import VERSION
 from synthdesk.utils.logging_utils import configure_logging
 
@@ -33,6 +37,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vol_window": 60,
     "log_level": "INFO",
     "log_file": None,
+    "regime_debug": False,  # Emit market.regime_debug events with full decision audit
 }
 
 
@@ -208,6 +213,22 @@ def run(config_path: Optional[str] = None) -> None:
             )
             config["vol_window"] = 2
 
+        # Validate window matches threshold calibration
+        config_vol_window = int(config.get("vol_window", 60))
+        if config_vol_window != REGIME_THRESHOLDS_V1.window_ticks:
+            _emit_invariant_violation(
+                event_spine_path,
+                "listener.window_threshold_mismatch",
+                "error",
+                {
+                    "config_window": config_vol_window,
+                    "threshold_window": REGIME_THRESHOLDS_V1.window_ticks,
+                    "thresholds_id": REGIME_THRESHOLDS_V1.thresholds_id,
+                },
+                f"vol_window must match threshold calibration ({REGIME_THRESHOLDS_V1.window_ticks})",
+                "regime_classification_invalid",
+            )
+
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
 
         # Log spine version warning if present
@@ -346,7 +367,12 @@ def run(config_path: Optional[str] = None) -> None:
                                 range_value = metrics.get("range")
                                 if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
                                     regime_metrics["range_pct"] = float(range_value) / float(price)
-                    regime, confidence = classify_regime(pair, regime_metrics, tick_dt.timestamp())
+                    # Use full classification for audit trail
+                    classification = classify_regime_full(
+                        pair, regime_metrics, tick_dt.timestamp(), REGIME_THRESHOLDS_V1
+                    )
+                    regime = classification.regime
+                    confidence = classification.confidence
                     # Timestamp authority fields (v0.1)
                     latency_ms = int((tick_receipt_ts - exchange_ts).total_seconds() * 1000)
                     regime_payload = {
@@ -354,6 +380,9 @@ def run(config_path: Optional[str] = None) -> None:
                         "regime": regime,
                         "confidence": confidence,
                         "window": window_label,
+                        "thresholds_id": classification.thresholds_id,
+                        "window_ticks": REGIME_THRESHOLDS_V1.window_ticks,
+                        "metrics": classification.to_payload_metrics(),
                         "tick_ts": tick_ts,
                         "exchange_ts": exchange_ts.isoformat(),
                         "receipt_ts": tick_receipt_ts.isoformat(),
@@ -382,6 +411,28 @@ def run(config_path: Optional[str] = None) -> None:
                         )
                     except OSError:
                         pass
+                    # Emit debug event with full decision audit if enabled
+                    if config.get("regime_debug", False):
+                        debug_payload = classification.to_debug_payload()
+                        debug_payload["tick_ts"] = tick_ts
+                        debug_payload["symbol"] = pair
+                        debug_event_id = _stable_event_id("market.regime_debug", tick_ts, debug_payload)
+                        try:
+                            append_event_spine(
+                                event_spine_path,
+                                EventEnvelope(
+                                    event_id=debug_event_id,
+                                    event_type="market.regime_debug",
+                                    timestamp=tick_dt.astimezone(timezone.utc),
+                                    source="synthdesk_listener",
+                                    version=VERSION,
+                                    schema_version=EVENT_ENVELOPE_VERSION,
+                                    host=socket.gethostname(),
+                                    payload=debug_payload,
+                                ),
+                            )
+                        except OSError:
+                            pass
                     prev_regime = prev_regime_by_symbol.get(pair)
                     if prev_regime is None:
                         prev_regime_by_symbol[pair] = regime

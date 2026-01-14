@@ -1,20 +1,41 @@
 auto_patch.txt (non-destructive; review manually)
-timestamp_utc: 2025-12-19T20:11:08.391921+00:00
-pid: 58634
-exception: RuntimeError: synthdesk live repair test
+timestamp_utc: 2026-01-04T05:17:11.384826+00:00
+pid: 92879
+exception: timeout: The read operation timed out
 
 TRACEBACK:
 Traceback (most recent call last):
-  File "<stdin>", line 4, in <module>
-RuntimeError: synthdesk live repair test
+  File "/Users/lucas/dev/synthdesk/packages/listener/synthdesk_listener/main.py", line 274, in run
+    prices = fetch_prices(config["pairs"], logger=logger)
+  File "/Users/lucas/dev/synthdesk/packages/listener/synthdesk/listener/price_listener.py", line 42, in fetch_prices
+    price = fetch_price(pair, logger=logger)
+  File "/Users/lucas/dev/synthdesk/packages/listener/synthdesk/listener/price_listener.py", line 24, in fetch_price
+    with urlopen(url, timeout=10) as response:
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 214, in urlopen
+    return opener.open(url, data, timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 517, in open
+    response = self._open(req, data)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 534, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 494, in _call_chain
+    result = func(*args)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 1389, in https_open
+    return self.do_open(http.client.HTTPSConnection, req,
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 1350, in do_open
+    r = h.getresponse()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/http/client.py", line 1349, in getresponse
+    response.begin()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/http/client.py", line 316, in begin
+    version, status, reason = self._read_status()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/http/client.py", line 277, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/socket.py", line 704, in readinto
+    return self._sock.recv_into(b)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/ssl.py", line 1241, in recv_into
+    return self.read(nbytes, buffer)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/ssl.py", line 1099, in read
+    return self._sslobj.read(len, buffer)
+socket.timeout: The read operation timed out
 
-AI_SUGGESTION (plain text):
-Root cause: The error message indicates a RuntimeError occurred during the execution of a script, specifically related to a "synthdesk live repair test." This suggests that there may be an issue with the logic or state management within the code that is being executed.
-
-Most likely fix: Review the code at line 4 of the script to identify what operation is being performed. Ensure that any dependencies or conditions required for that operation are met before execution. If the "synthdesk live repair test" is a function or method, check its implementation for any potential issues that could lead to a RuntimeError.
-
-Alternative fixes: If the error is related to external dependencies or resources, ensure that all necessary components are properly initialized and available. Consider adding error handling around the problematic code to catch and log exceptions, which can provide more context for debugging. Additionally, if the test is part of a larger framework, verify that the framework is correctly set up and that all configurations are valid.
-
-Architecture notes: To prevent similar issues in the future, consider implementing a more robust error handling strategy throughout the application. This could include using try-except blocks to catch exceptions and provide meaningful error messages. Additionally, consider using logging to capture the state of the application when errors occur, which can aid in diagnosing issues. Establishing a clear separation of concerns in the codebase can also help isolate problems and make debugging easier.
-
-Clarifying questions: What does the code at line 4 do? Is "synthdesk live repair test" a function or a specific operation? Are there any external dependencies or configurations that need to be checked?
+AI_UNAVAILABLE:
+RuntimeError: Missing OPENAI_API_KEY
