@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from synthdesk.listener.version import VERSION
 from synthdesk.listener.regime_classifier import (
     RegimeThresholds,
     REGIME_THRESHOLDS_V1,
+    REGIME_THRESHOLDS_V2,
     classify_regime,
     classify_regime_full,
     validate_window_config,
@@ -53,6 +55,26 @@ class ReplayHarness:
         pairs = self._collect_pairs()
         listener = PriceListener(pairs=pairs, vol_window=self.vol_window, logger=None, stateless=True)
         prev_regime_by_symbol: Dict[str, str] = {}
+        thresholds = REGIME_THRESHOLDS_V2
+        override = os.getenv("SD_Z_DRIFT_THRESHOLD")
+        if override:
+            try:
+                drift_override = float(override)
+            except ValueError:
+                drift_override = None
+            if drift_override is not None:
+                thresholds = RegimeThresholds(
+                    z_drift_threshold=drift_override,
+                    z_high_vol_threshold=REGIME_THRESHOLDS_V2.z_high_vol_threshold,
+                    z_breakout_mult=REGIME_THRESHOLDS_V2.z_breakout_mult,
+                    window_ticks=REGIME_THRESHOLDS_V2.window_ticks,
+                    calibration_window=REGIME_THRESHOLDS_V2.calibration_window,
+                    calibration_date=f"{REGIME_THRESHOLDS_V2.calibration_date}_drift{drift_override:.2f}",
+                    drift_percentile=f"override:{drift_override:.2f}",
+                    high_vol_percentile=REGIME_THRESHOLDS_V2.high_vol_percentile,
+                    sample_count=REGIME_THRESHOLDS_V2.sample_count,
+                    notes=f"{REGIME_THRESHOLDS_V2.notes} | drift_threshold_override",
+                )
 
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.output_path.write_text("", encoding="utf-8")
@@ -93,13 +115,20 @@ class ReplayHarness:
                 metrics = listener.process_tick(symbol, price, timestamp=raw_timestamp)
                 if raw_timestamp >= REGIME_EPOCH_START:
                     regime_metrics = self._build_regime_metrics(metrics, price)
-                    regime, confidence = classify_regime(symbol, regime_metrics, ts_dt.timestamp())
+                    classification = classify_regime_full(
+                        symbol, regime_metrics, ts_dt.timestamp(), thresholds
+                    )
+                    regime = classification.regime
+                    confidence = classification.confidence
 
                     regime_payload = {
                         "symbol": symbol,
                         "regime": regime,
                         "confidence": confidence,
                         "window": self.window_label,
+                        "thresholds_id": classification.thresholds_id,
+                        "window_ticks": thresholds.window_ticks,
+                        "metrics": classification.to_payload_metrics(),
                         "tick_ts": raw_timestamp,
                     }
                     self._emit_event("market.regime", raw_timestamp, regime_payload)
@@ -211,6 +240,7 @@ class ReplayHarness:
         z_mean = metrics.get("z_mean")
         z_std = metrics.get("z_std")
         ewma_sigma = metrics.get("ewma_sigma")
+        z_mean_history = metrics.get("z_mean_history")
 
         if (
             isinstance(z_mean, (int, float))
@@ -222,6 +252,8 @@ class ReplayHarness:
             regime_metrics["z_std"] = float(z_std)
             if isinstance(ewma_sigma, (int, float)) and not isinstance(ewma_sigma, bool):
                 regime_metrics["ewma_sigma"] = float(ewma_sigma)
+            if isinstance(z_mean_history, list):
+                regime_metrics["z_mean_history"] = z_mean_history
 
         # Legacy raw metrics (for backwards compatibility and audit)
         returns_mean = metrics.get("rolling_mean")

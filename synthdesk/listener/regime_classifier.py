@@ -113,6 +113,9 @@ REGIME_THRESHOLDS_V1 = RegimeThresholds(
     notes="DEPRECATED: V1 raw-space thresholds, do not use with z-space inputs",
 )
 
+# Drift persistence gate (H-005B). Keep minimal and auditable.
+DRIFT_PERSIST_LOOKBACK = 2
+
 
 # ---------------------------
 # Classification Result
@@ -207,6 +210,34 @@ def _as_float(value: object) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _drift_persist_ok(
+    z_mean_history: Optional[object],
+    drift_threshold: float,
+    lookback: int,
+) -> bool:
+    """Return True if recent z_mean values show persistent drift."""
+    if lookback < 1:
+        return False
+    if not isinstance(z_mean_history, list):
+        return False
+    if len(z_mean_history) < lookback + 1:
+        return False
+    recent = z_mean_history[-(lookback + 1):]
+    values: list[float] = []
+    for value in recent:
+        val = _as_float(value)
+        if val is None:
+            return False
+        values.append(val)
+    if any(v == 0.0 for v in values):
+        return False
+    sign = 1.0 if values[0] > 0.0 else -1.0
+    if not all((v > 0.0) == (sign > 0.0) for v in values):
+        return False
+    mean_abs = sum(abs(v) for v in values) / len(values)
+    return mean_abs >= drift_threshold
 
 
 # ---------------------------
@@ -354,6 +385,13 @@ def classify_regime_full(
         and abs_z_mean > breakout_mult * z_std_value
     )
     is_drift = z_mean is not None and abs_z_mean > drift_threshold
+    persist_ok = False
+    if is_drift:
+        persist_ok = _drift_persist_ok(
+            metrics.get("z_mean_history"),
+            drift_threshold,
+            DRIFT_PERSIST_LOOKBACK,
+        )
 
     if is_high_vol:
         confidence = min(1.0, (z_std_value - high_vol_threshold) / high_vol_threshold)
@@ -378,7 +416,7 @@ def classify_regime_full(
     if is_drift:
         confidence = min(1.0, (abs_z_mean - drift_threshold) / drift_threshold)
         return ClassificationResult(
-            regime="drift",
+            regime="drift_persist" if persist_ok else "drift",
             confidence=_quantize_confidence(confidence),
             scores=scores,
             metrics=input_metrics,

@@ -18,7 +18,7 @@ from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.constants import REGIME_EPOCH_START_DT
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
-from synthdesk.listener.price_listener import PriceListener, fetch_prices
+from synthdesk.listener.price_listener import PriceListener, fetch_kline_volume, fetch_prices
 from synthdesk.listener.regime_classifier import (
     classify_regime_full,
     REGIME_THRESHOLDS_V1,
@@ -33,11 +33,18 @@ REQUIRED_SPINE_MINOR = 1
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "poll_interval_seconds": 10,
-    "pairs": ["BTCUSDT", "ETHUSDT"],
+    "pairs": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
     "vol_window": 60,
     "log_level": "INFO",
     "log_file": None,
     "regime_debug": False,  # Emit market.regime_debug events with full decision audit
+    "emit_phase1": True,
+    "volume_source": "binance_klines",
+    "volume_interval_seconds": 60,
+    "binance_retry_max_attempts": 3,
+    "binance_retry_base_delay_seconds": 0.5,
+    "binance_retry_max_delay_seconds": 5.0,
+    "binance_retry_jitter_ratio": 0.2,
 }
 
 
@@ -117,6 +124,12 @@ def _parse_iso8601(timestamp: str) -> Optional[datetime]:
         return datetime.fromisoformat(candidate)
     except ValueError:
         return None
+
+
+def _last_closed_interval_start_ms(ts: datetime, interval_seconds: int) -> int:
+    epoch = int(ts.timestamp())
+    start_epoch = ((epoch // interval_seconds) - 1) * interval_seconds
+    return start_epoch * 1000
 
 
 def _normalize_for_hash(obj: Any) -> Any:
@@ -229,6 +242,42 @@ def run(config_path: Optional[str] = None) -> None:
                 "regime_classification_invalid",
             )
 
+        volume_source = config.get("volume_source", "none")
+        if volume_source not in ("none", "binance_klines"):
+            _emit_invariant_violation(
+                event_spine_path,
+                "listener.volume_source_invalid",
+                "warning",
+                volume_source,
+                "volume_source must be 'none' or 'binance_klines'",
+                "degraded",
+            )
+            volume_source = "none"
+        config["volume_source"] = volume_source
+
+        volume_interval = config.get("volume_interval_seconds", 60)
+        if not isinstance(volume_interval, int) or isinstance(volume_interval, bool) or volume_interval <= 0:
+            _emit_invariant_violation(
+                event_spine_path,
+                "listener.volume_interval_invalid",
+                "warning",
+                volume_interval,
+                "volume_interval_seconds must be int > 0",
+                "degraded",
+            )
+            volume_interval = 60
+        if volume_source == "binance_klines" and volume_interval not in {60, 180, 300, 900, 3600}:
+            _emit_invariant_violation(
+                event_spine_path,
+                "listener.volume_interval_unsupported",
+                "warning",
+                volume_interval,
+                "volume_interval_seconds must be one of 60, 180, 300, 900, 3600",
+                "degraded",
+            )
+            volume_interval = 60
+        config["volume_interval_seconds"] = volume_interval
+
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
 
         # Log spine version warning if present
@@ -261,6 +310,10 @@ def run(config_path: Optional[str] = None) -> None:
 
         poll_interval = max(1, int(config.get("poll_interval_seconds", 10)))
         window_label = f"{int(config.get('vol_window', 0))}ticks"
+        emit_phase1 = bool(config.get("emit_phase1", True))
+        volume_source = config.get("volume_source", "none")
+        volume_interval_seconds = int(config.get("volume_interval_seconds", 60))
+        volume_cache: Dict[str, tuple[int, float]] = {}
 
         # Emit listener.start with full version metadata for auditability
         listener_start_payload = {
@@ -296,7 +349,14 @@ def run(config_path: Optional[str] = None) -> None:
             safe_append_text(heartbeat_path, f"{receipt_ts} alive")
 
             # Fetch prices with timestamps (timestamp authority v0.1)
-            price_results = fetch_prices(config["pairs"], logger=logger)
+            price_results = fetch_prices(
+                config["pairs"],
+                logger=logger,
+                max_attempts=config["binance_retry_max_attempts"],
+                base_delay_s=config["binance_retry_base_delay_seconds"],
+                max_delay_s=config["binance_retry_max_delay_seconds"],
+                jitter_ratio=config["binance_retry_jitter_ratio"],
+            )
 
             if len(price_results) != len(config["pairs"]):
                 missing_pairs = [pair for pair in config["pairs"] if pair not in price_results]
@@ -310,6 +370,32 @@ def run(config_path: Optional[str] = None) -> None:
                         "degraded",
                     )
 
+            volume_by_pair: Dict[str, float] = {}
+            if volume_source == "binance_klines":
+                for pair, (_, exchange_ts, _, _) in price_results.items():
+                    interval_start_ms = _last_closed_interval_start_ms(
+                        exchange_ts, volume_interval_seconds
+                    )
+                    cached = volume_cache.get(pair)
+                    if cached and cached[0] == interval_start_ms:
+                        volume_by_pair[pair] = cached[1]
+                        continue
+                    volume_result = fetch_kline_volume(
+                        pair,
+                        interval_seconds=volume_interval_seconds,
+                        interval_start_ms=interval_start_ms,
+                        logger=logger,
+                        max_attempts=config["binance_retry_max_attempts"],
+                        base_delay_s=config["binance_retry_base_delay_seconds"],
+                        max_delay_s=config["binance_retry_max_delay_seconds"],
+                        jitter_ratio=config["binance_retry_jitter_ratio"],
+                    )
+                    if volume_result is None:
+                        continue
+                    volume, open_time_ms = volume_result
+                    volume_cache[pair] = (open_time_ms, volume)
+                    volume_by_pair[pair] = volume
+
             for pair, (price, exchange_ts, tick_receipt_ts, ts_authority) in price_results.items():
                 # Use exchange_ts as authoritative tick time
                 tick_dt = exchange_ts
@@ -320,7 +406,12 @@ def run(config_path: Optional[str] = None) -> None:
                     header = ["timestamp", "pair", "price"]
                     row = [tick_ts, pair, price]
                     safe_append_csv(prices_path, row, header=header)
-                metrics = listener.process_tick(pair, price, timestamp=tick_ts)
+                metrics = listener.process_tick(
+                    pair,
+                    price,
+                    timestamp=tick_ts,
+                    volume=volume_by_pair.get(pair),
+                )
                 if isinstance(metrics, dict) and metrics:
                     invalid_metrics: Dict[str, Any] = {}
                     required_fields = (
@@ -349,7 +440,7 @@ def run(config_path: Optional[str] = None) -> None:
                             "ignored",
                         )
                 if is_post_epoch:
-                    regime_metrics: Dict[str, float] = {}
+                    regime_metrics: Dict[str, Any] = {}
                     if isinstance(metrics, dict):
                         returns_mean = metrics.get("rolling_mean")
                         returns_std = metrics.get("rolling_std")
@@ -367,6 +458,10 @@ def run(config_path: Optional[str] = None) -> None:
                                 range_value = metrics.get("range")
                                 if isinstance(range_value, (int, float)) and not isinstance(range_value, bool):
                                     regime_metrics["range_pct"] = float(range_value) / float(price)
+                        # Pass z_mean_history to enable drift_persist classification
+                        z_mean_history = metrics.get("z_mean_history")
+                        if isinstance(z_mean_history, list):
+                            regime_metrics["z_mean_history"] = z_mean_history
                     # Use full classification for audit trail
                     classification = classify_regime_full(
                         pair, regime_metrics, tick_dt.timestamp(), REGIME_THRESHOLDS_V1
@@ -375,6 +470,23 @@ def run(config_path: Optional[str] = None) -> None:
                     confidence = classification.confidence
                     # Timestamp authority fields (v0.1)
                     latency_ms = int((tick_receipt_ts - exchange_ts).total_seconds() * 1000)
+                    phase1_primitives = None
+                    if emit_phase1 and isinstance(metrics, dict):
+                        # Phase 1 perception expansion (2026-01-20)
+                        # Extract second-order primitives from metrics
+                        phase1_values: Dict[str, Any] = {}
+                        delta_z_mean = metrics.get("delta_z_mean")
+                        if delta_z_mean is not None:
+                            phase1_values["delta_z_mean"] = delta_z_mean
+                        z_std_std = metrics.get("z_std_std")
+                        if z_std_std is not None:
+                            phase1_values["z_std_std"] = z_std_std
+                        delta_vol_norm = metrics.get("delta_vol_norm")
+                        if delta_vol_norm is not None:
+                            phase1_values["delta_vol_norm"] = delta_vol_norm
+                        if phase1_values:
+                            phase1_primitives = phase1_values
+
                     regime_payload = {
                         "symbol": pair,
                         "regime": regime,
@@ -390,6 +502,9 @@ def run(config_path: Optional[str] = None) -> None:
                         "ts_source": "binance.rest.ticker_price",
                         "latency_ms": latency_ms,
                     }
+                    if emit_phase1:
+                        # Phase 1 perception expansion (may be empty if insufficient history)
+                        regime_payload["phase1"] = phase1_primitives
                     regime_event_id = (
                         _stable_event_id("market.regime", tick_ts, regime_payload)
                         if is_post_epoch
