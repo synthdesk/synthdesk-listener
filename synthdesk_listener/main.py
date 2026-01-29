@@ -15,10 +15,11 @@ from typing import Any, Dict, Iterable, Optional
 
 import synthdesk_spine
 from synthdesk_spine import EventEnvelope, EVENT_ENVELOPE_VERSION
+from synthdesk_spine.event_types import INVARIANT_VIOLATION
 from synthdesk.event_spine_writer import append_event_spine
 from synthdesk.constants import REGIME_EPOCH_START_DT
 from synthdesk.listener.io.atomic import atomic_write_json, safe_append_csv, safe_append_text
-from synthdesk.listener.price_listener import PriceListener, fetch_kline_volume, fetch_prices
+from synthdesk.listener.price_listener import PriceListener, fetch_prices
 from synthdesk.listener.regime_classifier import (
     classify_regime_full,
     REGIME_THRESHOLDS_V1,
@@ -28,6 +29,8 @@ from synthdesk.listener.version import VERSION
 from synthdesk.utils.logging_utils import configure_logging
 
 # Spine SDK version contract
+# Soak obedience adapter version (for lifecycle events)
+SOAK_ADAPTER_VERSION = "0.1.0"
 REQUIRED_SPINE_MAJOR = 0
 REQUIRED_SPINE_MINOR = 1
 
@@ -38,9 +41,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_level": "INFO",
     "log_file": None,
     "regime_debug": False,  # Emit market.regime_debug events with full decision audit
-    "emit_phase1": True,
-    "volume_source": "binance_klines",
-    "volume_interval_seconds": 60,
+    "emit_phase1": False,
     "binance_retry_max_attempts": 3,
     "binance_retry_base_delay_seconds": 0.5,
     "binance_retry_max_delay_seconds": 5.0,
@@ -126,12 +127,6 @@ def _parse_iso8601(timestamp: str) -> Optional[datetime]:
         return None
 
 
-def _last_closed_interval_start_ms(ts: datetime, interval_seconds: int) -> int:
-    epoch = int(ts.timestamp())
-    start_epoch = ((epoch // interval_seconds) - 1) * interval_seconds
-    return start_epoch * 1000
-
-
 def _normalize_for_hash(obj: Any) -> Any:
     if isinstance(obj, dict):
         normalized: Dict[Any, Any] = {}
@@ -175,7 +170,7 @@ def _emit_invariant_violation_payload(
         event_spine_path,
         "invariant.violation",
         {
-            "event_type": "invariant.violation",
+            "event_type": INVARIANT_VIOLATION,
             "invariant_id": invariant_id,
             "severity": severity,
             "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
@@ -202,6 +197,70 @@ def _emit_invariant_violation(
             "action": action,
         },
     )
+
+
+# =============================================================================
+# Soak Obedience Adapter
+# =============================================================================
+# These functions enable the listener to run under soak control plane governance.
+# When mode="IGNORE" (default), none of this code executes — canonical behavior
+# is mechanically preserved.
+
+
+def _check_signal(signals_dir: Path, signal_name: str) -> bool:
+    """Check if a signal file exists."""
+    return (signals_dir / f"{signal_name}.json").exists()
+
+
+def _consume_signal(signals_dir: Path, signal_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Read and delete a signal file (atomic consumption).
+
+    Returns signal data if successful, None otherwise.
+    Always deletes file on read attempt to prevent infinite retry on malformed signals.
+    """
+    signal_path = signals_dir / f"{signal_name}.json"
+    if not signal_path.exists():
+        return None
+    data = None
+    try:
+        with signal_path.open() as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        pass  # Malformed or unreadable — still delete to prevent livelock
+    # Always try to delete (prevents signal accumulation)
+    try:
+        signal_path.unlink()
+    except OSError:
+        pass  # Race: already consumed by another process
+    return data
+
+
+def _emit_lifecycle(
+    lifecycle_log: Path,
+    event: str,
+    soak_id: str,
+    run_id: str,
+    **extra: Any,
+) -> None:
+    """Emit a lifecycle event to soak lifecycle log (best effort)."""
+    if str(lifecycle_log) == "/dev/null":
+        return
+    record = {
+        "event": event,
+        "schema_version": SOAK_ADAPTER_VERSION,
+        "soak_id": soak_id,
+        "run_id": run_id,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "runner_type": "listener",
+        **extra,
+    }
+    try:
+        lifecycle_log.parent.mkdir(parents=True, exist_ok=True)
+        with lifecycle_log.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass  # Best effort — don't crash listener for lifecycle IO
 
 
 def run(config_path: Optional[str] = None) -> None:
@@ -242,43 +301,16 @@ def run(config_path: Optional[str] = None) -> None:
                 "regime_classification_invalid",
             )
 
-        volume_source = config.get("volume_source", "none")
-        if volume_source not in ("none", "binance_klines"):
-            _emit_invariant_violation(
-                event_spine_path,
-                "listener.volume_source_invalid",
-                "warning",
-                volume_source,
-                "volume_source must be 'none' or 'binance_klines'",
-                "degraded",
-            )
-            volume_source = "none"
-        config["volume_source"] = volume_source
-
-        volume_interval = config.get("volume_interval_seconds", 60)
-        if not isinstance(volume_interval, int) or isinstance(volume_interval, bool) or volume_interval <= 0:
-            _emit_invariant_violation(
-                event_spine_path,
-                "listener.volume_interval_invalid",
-                "warning",
-                volume_interval,
-                "volume_interval_seconds must be int > 0",
-                "degraded",
-            )
-            volume_interval = 60
-        if volume_source == "binance_klines" and volume_interval not in {60, 180, 300, 900, 3600}:
-            _emit_invariant_violation(
-                event_spine_path,
-                "listener.volume_interval_unsupported",
-                "warning",
-                volume_interval,
-                "volume_interval_seconds must be one of 60, 180, 300, 900, 3600",
-                "degraded",
-            )
-            volume_interval = 60
-        config["volume_interval_seconds"] = volume_interval
-
         logger = configure_logging(config.get("log_level", "INFO"), log_file=config.get("log_file"))
+
+        # Soak control configuration (defaults to standalone/IGNORE mode)
+        # When mode="IGNORE", no signal checking occurs — canonical behavior preserved.
+        soak_config = config.get("soak", {})
+        soak_mode = soak_config.get("mode", "IGNORE")
+        soak_id = soak_config.get("soak_id", "standalone")
+        signals_dir = Path(soak_config.get("signals_dir", "/dev/null"))
+        lifecycle_log = Path(soak_config.get("lifecycle_log", "/dev/null"))
+        soak_run_id = str(uuid.uuid4())
 
         # Log spine version warning if present
         if spine_version_warning:
@@ -310,10 +342,7 @@ def run(config_path: Optional[str] = None) -> None:
 
         poll_interval = max(1, int(config.get("poll_interval_seconds", 10)))
         window_label = f"{int(config.get('vol_window', 0))}ticks"
-        emit_phase1 = bool(config.get("emit_phase1", True))
-        volume_source = config.get("volume_source", "none")
-        volume_interval_seconds = int(config.get("volume_interval_seconds", 60))
-        volume_cache: Dict[str, tuple[int, float]] = {}
+        emit_phase1 = bool(config.get("emit_phase1", False))
 
         # Emit listener.start with full version metadata for auditability
         listener_start_payload = {
@@ -333,6 +362,14 @@ def run(config_path: Optional[str] = None) -> None:
             listener_start_payload,
         )
 
+        # Emit RUNNER_START if in OBEY mode (soak control plane integration)
+        if soak_mode == "OBEY":
+            _emit_lifecycle(
+                lifecycle_log, "RUNNER_START", soak_id, soak_run_id,
+                runner_mode=soak_mode,
+                source_event_ts=datetime.now(timezone.utc).isoformat(),
+            )
+
         listener = PriceListener(
             pairs=config["pairs"],
             vol_window=int(config["vol_window"]),
@@ -341,7 +378,66 @@ def run(config_path: Optional[str] = None) -> None:
         prev_regime_by_symbol: Dict[str, str] = {}
 
         logger.info("Starting listener for pairs %s with poll interval %ss", config["pairs"], poll_interval)
+
+        # Soak obedience state (only meaningful when mode="OBEY")
+        paused = False
+        work_count = 0
+
         while True:
+            # === Signal handling (only in OBEY mode) ===
+            if soak_mode == "OBEY":
+                # TERMINATE takes precedence — check first
+                if _check_signal(signals_dir, "TERMINATE"):
+                    signal_data = _consume_signal(signals_dir, "TERMINATE")
+                    _emit_lifecycle(
+                        lifecycle_log, "RUNNER_SIGNAL_SEEN", soak_id, soak_run_id,
+                        signal="TERMINATE",
+                        source_event_ts=signal_data.get("ts_utc") if signal_data else None,
+                    )
+                    _emit_lifecycle(lifecycle_log, "RUNNER_TERMINATED", soak_id, soak_run_id)
+                    logger.info("Received TERMINATE signal, shutting down")
+                    break
+
+                # PAUSE — always consume to prevent accumulation
+                if _check_signal(signals_dir, "PAUSE"):
+                    signal_data = _consume_signal(signals_dir, "PAUSE")
+                    _emit_lifecycle(
+                        lifecycle_log, "RUNNER_SIGNAL_SEEN", soak_id, soak_run_id,
+                        signal="PAUSE",
+                        source_event_ts=signal_data.get("ts_utc") if signal_data else None,
+                    )
+                    if not paused:
+                        paused = True
+                        _emit_lifecycle(lifecycle_log, "RUNNER_PAUSED", soak_id, soak_run_id)
+                        logger.info("Received PAUSE signal, pausing work")
+
+                # RESUME — always consume to prevent accumulation
+                if _check_signal(signals_dir, "RESUME"):
+                    signal_data = _consume_signal(signals_dir, "RESUME")
+                    _emit_lifecycle(
+                        lifecycle_log, "RUNNER_SIGNAL_SEEN", soak_id, soak_run_id,
+                        signal="RESUME",
+                        source_event_ts=signal_data.get("ts_utc") if signal_data else None,
+                    )
+                    if paused:
+                        paused = False
+                        _emit_lifecycle(lifecycle_log, "RUNNER_RESUMED", soak_id, soak_run_id)
+                        logger.info("Received RESUME signal, resuming work")
+
+            # Skip work if paused (reuse poll_interval to preserve timing semantics)
+            if paused:
+                time.sleep(poll_interval)
+                continue
+
+            # === Emit work tick for soak observability ===
+            work_count += 1
+            if soak_mode == "OBEY":
+                _emit_lifecycle(
+                    lifecycle_log, "RUNNER_WORK_TICK", soak_id, soak_run_id,
+                    work_count=work_count,
+                    source_event_ts=datetime.now(timezone.utc).isoformat(),
+                )
+
             # Capture observer receipt time at loop entry (used for lifecycle events)
             receipt_dt = datetime.now(timezone.utc)
             receipt_ts = receipt_dt.isoformat()
@@ -370,32 +466,6 @@ def run(config_path: Optional[str] = None) -> None:
                         "degraded",
                     )
 
-            volume_by_pair: Dict[str, float] = {}
-            if volume_source == "binance_klines":
-                for pair, (_, exchange_ts, _, _) in price_results.items():
-                    interval_start_ms = _last_closed_interval_start_ms(
-                        exchange_ts, volume_interval_seconds
-                    )
-                    cached = volume_cache.get(pair)
-                    if cached and cached[0] == interval_start_ms:
-                        volume_by_pair[pair] = cached[1]
-                        continue
-                    volume_result = fetch_kline_volume(
-                        pair,
-                        interval_seconds=volume_interval_seconds,
-                        interval_start_ms=interval_start_ms,
-                        logger=logger,
-                        max_attempts=config["binance_retry_max_attempts"],
-                        base_delay_s=config["binance_retry_base_delay_seconds"],
-                        max_delay_s=config["binance_retry_max_delay_seconds"],
-                        jitter_ratio=config["binance_retry_jitter_ratio"],
-                    )
-                    if volume_result is None:
-                        continue
-                    volume, open_time_ms = volume_result
-                    volume_cache[pair] = (open_time_ms, volume)
-                    volume_by_pair[pair] = volume
-
             for pair, (price, exchange_ts, tick_receipt_ts, ts_authority) in price_results.items():
                 # Use exchange_ts as authoritative tick time
                 tick_dt = exchange_ts
@@ -406,12 +476,7 @@ def run(config_path: Optional[str] = None) -> None:
                     header = ["timestamp", "pair", "price"]
                     row = [tick_ts, pair, price]
                     safe_append_csv(prices_path, row, header=header)
-                metrics = listener.process_tick(
-                    pair,
-                    price,
-                    timestamp=tick_ts,
-                    volume=volume_by_pair.get(pair),
-                )
+                metrics = listener.process_tick(pair, price, timestamp=tick_ts)
                 if isinstance(metrics, dict) and metrics:
                     invalid_metrics: Dict[str, Any] = {}
                     required_fields = (
@@ -484,6 +549,9 @@ def run(config_path: Optional[str] = None) -> None:
                         delta_vol_norm = metrics.get("delta_vol_norm")
                         if delta_vol_norm is not None:
                             phase1_values["delta_vol_norm"] = delta_vol_norm
+                        range_norm = metrics.get("range_norm")
+                        if range_norm is not None:
+                            phase1_values["range_norm"] = range_norm
                         if phase1_values:
                             phase1_primitives = phase1_values
 
@@ -615,6 +683,9 @@ def run(config_path: Optional[str] = None) -> None:
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         _emit_listener_event(event_spine_path, "listener.stop", {"reason": "keyboard_interrupt"})
+        # Emit clean termination for soak observability
+        if soak_mode == "OBEY":
+            _emit_lifecycle(lifecycle_log, "RUNNER_TERMINATED", soak_id, soak_run_id, reason="keyboard_interrupt")
         if logger is not None:
             logger.info("Stopping listener (keyboard interrupt)")
     except Exception as e:
