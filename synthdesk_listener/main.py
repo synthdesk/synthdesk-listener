@@ -26,6 +26,7 @@ from synthdesk.listener.regime_classifier import (
     validate_window_config,
 )
 from synthdesk.listener.version import VERSION
+from synthdesk.ops.startup_class import classify_startup
 from synthdesk.utils.logging_utils import configure_logging
 
 # Spine SDK version contract
@@ -344,12 +345,24 @@ def run(config_path: Optional[str] = None) -> None:
         window_label = f"{int(config.get('vol_window', 0))}ticks"
         emit_phase1 = bool(config.get("emit_phase1", False))
 
+        # Classify startup semantics from existing artifacts
+        startup_type, startup_meta = classify_startup(
+            state_path=str(base / "state.json"),
+            lifecycle_path=str(lifecycle_log) if str(lifecycle_log) != "/dev/null" else None,
+            ledger_path=None,  # listener does not own a ledger
+        )
+
         # Emit listener.start with full version metadata for auditability
         listener_start_payload = {
             "pairs": config.get("pairs"),
             "poll_interval_seconds": poll_interval,
             "spine_sdk_version": spine_version,
             "python_version": sys.version.split()[0],  # e.g., "3.12.3"
+            "startup": {
+                "startup_type": startup_type,
+                "rule": startup_meta.get("rule"),
+                "evidence": startup_meta.get("evidence"),
+            },
         }
         if spine_version_warning:
             listener_start_payload["spine_version_warning"] = (
@@ -367,6 +380,8 @@ def run(config_path: Optional[str] = None) -> None:
             _emit_lifecycle(
                 lifecycle_log, "RUNNER_START", soak_id, soak_run_id,
                 runner_mode=soak_mode,
+                startup_type=startup_type,
+                startup_rule=startup_meta.get("rule"),
                 source_event_ts=datetime.now(timezone.utc).isoformat(),
             )
 
