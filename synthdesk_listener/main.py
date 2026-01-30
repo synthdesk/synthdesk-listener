@@ -325,6 +325,17 @@ def run(config_path: Optional[str] = None) -> None:
         listener_started_at = datetime.now(timezone.utc)
         heartbeat_gap_violation_emitted = False
 
+        base = Path(__file__).resolve().parents[1] / "runs" / VERSION
+        base.mkdir(parents=True, exist_ok=True)
+        meta_path = base / "run_meta.json"
+
+        # Classify startup semantics BEFORE writing run_meta (so cold is detectable)
+        startup_type, startup_meta = classify_startup(
+            state_path=str(meta_path),
+            lifecycle_path=str(lifecycle_log) if str(lifecycle_log) != "/dev/null" else None,
+            ledger_path=None,  # listener does not own a ledger
+        )
+
         run_meta = {
             "version": VERSION,
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -332,9 +343,6 @@ def run(config_path: Optional[str] = None) -> None:
             "poll_interval": config.get("poll_interval_seconds"),
             "log_level": config.get("log_level"),
         }
-        base = Path(__file__).resolve().parents[1] / "runs" / VERSION
-        base.mkdir(parents=True, exist_ok=True)
-        meta_path = base / "run_meta.json"
         atomic_write_json(meta_path, run_meta)
 
         day_dir = _get_run_day_dir()
@@ -344,13 +352,6 @@ def run(config_path: Optional[str] = None) -> None:
         poll_interval = max(1, int(config.get("poll_interval_seconds", 10)))
         window_label = f"{int(config.get('vol_window', 0))}ticks"
         emit_phase1 = bool(config.get("emit_phase1", False))
-
-        # Classify startup semantics from existing artifacts
-        startup_type, startup_meta = classify_startup(
-            state_path=str(base / "state.json"),
-            lifecycle_path=str(lifecycle_log) if str(lifecycle_log) != "/dev/null" else None,
-            ledger_path=None,  # listener does not own a ledger
-        )
 
         # Emit listener.start with full version metadata for auditability
         listener_start_payload = {
