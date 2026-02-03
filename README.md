@@ -24,3 +24,24 @@ it does not trade, execute, recommend, optimize, or act.
 all outputs are descriptive epistemic records.
 any downstream system must introduce its own independent logic.
 ---
+
+## v1 sensor-only path
+
+Sensor-only listeners that emit synthdesk contract v1 envelopes to disk.
+
+Principles:
+- no repair
+- no window state
+- no inference
+- write-only
+- deterministic envelope mapping
+
+Outputs:
+- `/var/lib/synthdesk/raw_v1/venue=binance/symbol=BTCUSDT/channel=aggTrade/date=YYYY-MM-DD.jsonl`
+- `/var/lib/synthdesk/raw_v1/venue=binance/symbol=BTCUSDT/channel=depth/date=YYYY-MM-DD.jsonl`
+
+Run:
+```
+synthdesk-listener aggtrade --symbol BTCUSDT --raw-root /var/lib/synthdesk/raw_v1 --listener-id ingester-b
+synthdesk-listener depth --symbol BTCUSDT --interval 100ms --raw-root /var/lib/synthdesk/raw_v1 --listener-id ingester-b
+```

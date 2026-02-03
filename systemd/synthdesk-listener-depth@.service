@@ -1,0 +1,15 @@
+[Unit]
+Description=Synthdesk Listener depth@100ms (%i)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/synthdesk-listener
+ExecStart=/opt/synthdesk-listener/.venv/bin/python -m synthdesk_listener.cli depth --symbol %i --interval 100ms --raw-root /var/lib/synthdesk/raw_v1 --listener-id ingester-b
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
