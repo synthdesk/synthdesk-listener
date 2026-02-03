@@ -1,29 +1,5 @@
-# synthdesk runtime output (non-authoritative)
-# runs/ is runtime-generated data
-# git is not a data store
-# runs/ must never be committed
-
-# python
+.venv/
 __pycache__/
 *.pyc
-
-# venvs
-.venv/
-env/
-.env
-
-# ide
-.vscode/
-.idea/
-
-# os cruft
 .DS_Store
-
-runs/
-**/*.jsonl
-**/*.csv
-**/*.parquet
-**/*.log
-
-# allow committed fixtures (small, non-runtime)
-!tests/fixtures/**/*.jsonl
+.env
