@@ -28,6 +28,8 @@ async def run_depth(
         async for msg in connect_stream(stream):
             ts_recv = now_ns()
             data = msg.get("data") if isinstance(msg, dict) else None
+            if not isinstance(data, dict) and isinstance(msg, dict):
+                data = msg
             if not isinstance(data, dict):
                 continue
             if data.get("e") != "depthUpdate":
