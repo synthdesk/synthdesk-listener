@@ -1,6 +1,6 @@
 {
   "poll_interval_seconds": 10,
-  "pairs": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "pairs": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ETHBTC"],
   "vol_window": 60,
   "emit_phase1": true,
   "volume_source": "binance_klines",
