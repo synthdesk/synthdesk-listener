@@ -29,7 +29,9 @@ async def run_bookticker(
                 data = msg
             if not isinstance(data, dict):
                 continue
-            if data.get("e") != "bookTicker":
+            # Binance spot bookTicker stream payload does not include `e` event type.
+            # Keep compatibility with wrapped streams that may include it.
+            if "e" in data and data.get("e") != "bookTicker":
                 continue
             env = build_book_ticker_envelope(
                 venue="binance",
@@ -42,4 +44,3 @@ async def run_bookticker(
             rot.write(env)
     finally:
         rot.close()
-
