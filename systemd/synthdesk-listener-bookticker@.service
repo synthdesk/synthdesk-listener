@@ -1,0 +1,15 @@
+[Unit]
+Description=Synthdesk Listener bookTicker (%i)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/synthdesk-listener
+ExecStart=/opt/synthdesk-listener/.venv/bin/python -m synthdesk_listener.cli bookticker --symbol %i --raw-root /var/lib/synthdesk/raw_v1 --listener-id ingester-b
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

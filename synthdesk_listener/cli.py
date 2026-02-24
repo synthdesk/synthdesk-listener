@@ -6,6 +6,7 @@ import os
 
 from synthdesk_listener.util.logging import configure_logging
 from synthdesk_listener.venues.binance.aggtrade import run_aggtrade
+from synthdesk_listener.venues.binance.bookticker import run_bookticker
 from synthdesk_listener.venues.binance.depth100ms import run_depth
 
 
@@ -28,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_depth.add_argument("--raw-root", required=True)
     p_depth.add_argument("--listener-id", required=True)
     p_depth.add_argument("--include-raw", action="store_true", help="include payload_raw.binance")
+
+    p_bt = sub.add_parser("bookticker", help="binance bookTicker -> v1 envelopes")
+    p_bt.add_argument("--symbol", required=True)
+    p_bt.add_argument("--raw-root", required=True)
+    p_bt.add_argument("--listener-id", required=True)
+    p_bt.add_argument("--include-raw", action="store_true", help="include payload_raw.binance")
 
     return p
 
@@ -53,6 +60,18 @@ def main(argv: list[str] | None = None) -> int:
             run_depth(
                 symbol=args.symbol,
                 interval=args.interval,
+                raw_root=args.raw_root,
+                listener_id=args.listener_id,
+                include_raw=bool(args.include_raw),
+                logger=logger,
+            )
+        )
+        return 0
+
+    if args.cmd == "bookticker":
+        asyncio.run(
+            run_bookticker(
+                symbol=args.symbol,
                 raw_root=args.raw_root,
                 listener_id=args.listener_id,
                 include_raw=bool(args.include_raw),

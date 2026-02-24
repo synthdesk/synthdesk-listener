@@ -108,3 +108,38 @@ def build_depth_update_envelope(
         payload=payload,
         payload_raw={"binance": {"data": data}} if include_raw else None,
     )
+
+
+def build_book_ticker_envelope(
+    *,
+    venue: str,
+    symbol: str,
+    ts_recv_ns: int,
+    listener_id: str,
+    data: dict[str, Any],
+    include_raw: bool = False,
+) -> dict[str, Any]:
+    update_id = int(data["u"])
+    ts_event_ms = int(data.get("E", ts_recv_ns // 1_000_000))
+    payload = {
+        "update_id": update_id,
+        "bid_price": data["b"],
+        "bid_qty": data["B"],
+        "ask_price": data["a"],
+        "ask_qty": data["A"],
+        "ts_event_ms": ts_event_ms,
+    }
+    return _base(
+        event_type="book_ticker",
+        venue=venue,
+        symbol=symbol,
+        channel="bookTicker",
+        event_id=update_id,
+        seq=update_id,
+        ts_event_ms=ts_event_ms,
+        ts_recv_ns=ts_recv_ns,
+        listener_id=listener_id,
+        schema_id="binance.book_ticker.v1",
+        payload=payload,
+        payload_raw={"binance": {"data": data}} if include_raw else None,
+    )
