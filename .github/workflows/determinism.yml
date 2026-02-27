@@ -1,23 +1,15 @@
 name: determinism-gate
 
 on:
-  pull_request:
   push:
-    branches: [ main ]
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  verify-determinism:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-
-      - name: setup python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: verify frozen regime epoch
-        run: |
-          python scripts/verify_day.py baselines/2025-12-30
+  call:
+    uses: synthdesk/synthdesk/.github/workflows/golden-gates-reusable.yml@ci-gates-v1.0.1
+    with:
+      repo_role: listener
+      python_listener: "3.12"
+    secrets: inherit
