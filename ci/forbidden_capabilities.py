@@ -14,6 +14,16 @@ FORBIDDEN_TOKENS = [
     "send_transaction",
 ]
 
+# Explicit allowlist for runtime plumbing and maintenance utilities that
+# intentionally use transport/process primitives.
+ALLOWLIST = {
+    "synthdesk_listener/cli.py": {"asyncio"},
+    "synthdesk_listener/venues/binance/ws.py": {"asyncio", "websocket"},
+    "scripts/verify_day.py": {"subprocess"},
+    "soak_artifacts/collect_daily.py": {"subprocess"},
+    "synthdesk/ops/ledger_cmd.py": {"subprocess"},
+}
+
 violations = []
 
 for path in pathlib.Path(".").rglob("*.py"):
@@ -22,7 +32,11 @@ for path in pathlib.Path(".").rglob("*.py"):
         continue
 
     text = path.read_text(errors="ignore")
+    rel = path.as_posix()
+    allowed_tokens = ALLOWLIST.get(rel, set())
     for token in FORBIDDEN_TOKENS:
+        if token in allowed_tokens:
+            continue
         if token in text:
             violations.append(f"{path}: {token}")
 
