@@ -8,7 +8,7 @@ on:
 
 jobs:
   call:
-    uses: synthdesk/synthdesk/.github/workflows/golden-gates-reusable.yml@ci-gates-v1.0.1
+    uses: synthdesk/synthdesk-tools/.github/workflows/golden-gates-reusable.yml@c4592edbbfb3cf18c4a1ddcbdac8b044b6c4fe42
     with:
       repo_role: listener
       python_listener: "3.12"
